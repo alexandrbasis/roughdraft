@@ -59,6 +59,28 @@ describe("ReviewEventQueue", () => {
     vi.useRealTimers();
   });
 
+  it("removes an aborted watcher and does not deliver later events to it", async () => {
+    const queue = new ReviewEventQueue();
+    const controller = new AbortController();
+    const waiting = queue.wait({
+      documentPath: "/tmp/project/draft.md",
+      signal: controller.signal,
+      batchWindowMs: 0,
+    });
+
+    expect(queue.waiterCount()).toBe(1);
+    controller.abort();
+
+    await expect(waiting).resolves.toMatchObject({
+      events: [],
+      timedOut: true,
+    });
+    expect(queue.waiterCount()).toBe(0);
+    expect(queue.emit(eventInput("/tmp/project/draft.md")).delivered).toBe(
+      false,
+    );
+  });
+
   it("returns overall comments with delivered events", async () => {
     vi.useFakeTimers();
     const queue = new ReviewEventQueue();

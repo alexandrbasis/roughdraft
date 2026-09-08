@@ -1,11 +1,13 @@
 #!/usr/bin/env node
 
+import assert from "node:assert/strict";
 import { spawn } from "node:child_process";
 import {
   access,
   mkdtemp,
   mkdir,
   readFile,
+  realpath,
   rm,
   writeFile,
 } from "node:fs/promises";
@@ -33,6 +35,14 @@ if (
 ) {
   throw new Error("package.json must define name, version, and bin");
 }
+
+const args = process.argv.slice(2);
+if (args.length && (args.length !== 2 || args[0] !== "--tarball")) {
+  throw new Error(
+    "Usage: node scripts/test-package-install.mjs [--tarball /path/package.tgz]",
+  );
+}
+const suppliedTarball = args.length ? path.resolve(args[1]) : null;
 
 const npmCommand = process.platform === "win32" ? "npm.cmd" : "npm";
 const pnpmCommand = process.platform === "win32" ? "pnpm.cmd" : "pnpm";
@@ -147,6 +157,66 @@ function packageDirectory(consumerDirectory) {
   );
 }
 
+async function verifyInstalledServer(manager, invoke, installedDirectory) {
+  const result = {
+    command: "installed-server",
+    args: [manager],
+    exitCode: 0,
+    signal: null,
+    timedOut: false,
+    stdout: "",
+    stderr: "",
+  };
+  let managed = false;
+  const receipt = {};
+  try {
+    const started = await invoke("start", ["start", "--json"]);
+    assert.equal(started.exitCode, 0, `server start: ${started.stderr}`);
+    receipt.start = JSON.parse(started.stdout);
+    managed = receipt.start.managed && !receipt.start.reused;
+    assert.equal(managed, true, "must start an isolated installed server");
+    const get = async (route) => {
+      const response = await fetch(new URL(route, receipt.start.url), {
+        signal: AbortSignal.timeout(10_000),
+      });
+      assert.equal(response.status, 200, route);
+      return response;
+    };
+    receipt.status = await (await get("/api/status")).json();
+    assert.equal(receipt.status.pid, receipt.start.pid);
+    assert.equal(
+      await realpath(receipt.status.serverRoot),
+      await realpath(installedDirectory),
+    );
+    const html = await (await get("/")).text();
+    const asset = html.match(/<script[^>]+src="([^"]+)"/);
+    assert.ok(asset, "packed homepage must reference a built script");
+    const script = await (await get(asset[1])).text();
+    assert.ok(script.length > 1000, "packed browser script must be present");
+    receipt.asset = { path: asset[1], bytes: script.length };
+  } catch (error) {
+    result.exitCode = 1;
+    result.stderr = String(error.stack ?? error);
+  } finally {
+    if (managed) {
+      const stopped = await invoke("stop", ["stop", "--json"]);
+      receipt.stop = stopped;
+      try {
+        assert.equal(stopped.exitCode, 0);
+        assert.equal(JSON.parse(stopped.stdout).stopped, true);
+        const status = await invoke("after-stop", ["status", "--json"]);
+        assert.equal(JSON.parse(status.stdout).running, false);
+      } catch (error) {
+        result.exitCode = 1;
+        result.stderr += `\nServer cleanup failed: ${error}`;
+      }
+    }
+  }
+  result.stdout = JSON.stringify(receipt, null, 2);
+  await record(`${manager}-server`, result);
+  return result;
+}
+
 async function runInstalledCli(manager, consumerDirectory, environment) {
   const installedDirectory = packageDirectory(consumerDirectory);
   const cliPath = path.resolve(installedDirectory, cliTarget);
@@ -198,6 +268,7 @@ async function runInstalledCli(manager, consumerDirectory, environment) {
     help: await invoke("doctor-help", ["doctor", "--help"]),
     version: await invoke("version", ["--version"]),
     doctor: await invoke("doctor", ["doctor", samplePath, "--json"]),
+    server: await verifyInstalledServer(manager, invoke, installedDirectory),
   };
 }
 
@@ -282,6 +353,7 @@ function checks(result) {
   }
   return [
     ["install", result.install, result.install.exitCode === 0],
+    ["server and browser assets", result.server, result.server.exitCode === 0],
     [
       "doctor --help",
       result.help,
@@ -307,32 +379,37 @@ function checks(result) {
 
 try {
   await mkdir(packDirectory, { recursive: true });
-  const packCache = path.join(temporaryRoot, "pack-npm-cache");
-  const packUserConfig = path.join(temporaryRoot, "pack-npmrc");
-  await mkdir(packCache, { recursive: true });
-  await writeFile(packUserConfig, "\n");
-  const pack = await runCommand(
-    npmCommand,
-    ["pack", "--json", "--pack-destination", packDirectory],
-    {
-      cwd: repoRoot,
-      env: {
-        ...process.env,
-        NPM_CONFIG_CACHE: packCache,
-        NPM_CONFIG_USERCONFIG: packUserConfig,
-        NO_COLOR: "1",
+  let tarballPath = suppliedTarball;
+  if (!tarballPath) {
+    const packCache = path.join(temporaryRoot, "pack-npm-cache");
+    const packUserConfig = path.join(temporaryRoot, "pack-npmrc");
+    await mkdir(packCache, { recursive: true });
+    await writeFile(packUserConfig, "\n");
+    const pack = await runCommand(
+      npmCommand,
+      ["pack", "--json", "--pack-destination", packDirectory],
+      {
+        cwd: repoRoot,
+        env: {
+          ...process.env,
+          NPM_CONFIG_CACHE: packCache,
+          NPM_CONFIG_USERCONFIG: packUserConfig,
+          NO_COLOR: "1",
+        },
+        timeoutMs: timeouts.pack,
       },
-      timeoutMs: timeouts.pack,
-    },
-  );
-  await record("npm-pack", pack);
-  if (pack.exitCode !== 0) {
-    printFailure("npm pack", pack);
-    throw new Error(`npm pack failed with exit code ${pack.exitCode}`);
-  }
+    );
+    await record("npm-pack", pack);
+    if (pack.exitCode !== 0) {
+      printFailure("npm pack", pack);
+      throw new Error(`npm pack failed with exit code ${pack.exitCode}`);
+    }
 
-  const packed = JSON.parse(pack.stdout)[0];
-  const tarballPath = path.join(packDirectory, packed.filename);
+    const packed = JSON.parse(pack.stdout)[0];
+    tarballPath = path.join(packDirectory, packed.filename);
+  } else {
+    await access(tarballPath);
+  }
   const results = [];
   for (const manager of ["npm", "pnpm"]) {
     results.push(await install(manager, tarballPath));
@@ -355,6 +432,7 @@ try {
       help: summary(result.help),
       version: summary(result.version),
       doctor: summary(result.doctor),
+      server: summary(result.server),
     })),
   };
   await writeFile(reportPath, `${JSON.stringify(report, null, 2)}\n`);

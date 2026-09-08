@@ -13,7 +13,8 @@
     "skipLibCheck": true,
     "outDir": "dist",
     "declaration": true,
-    "lib": ["ES2022", "DOM", "DOM.Iterable"]
+    "lib": ["ES2022", "DOM", "DOM.Iterable"],
+    "resolveJsonModule": true
   },
   "include": ["src"],
   "exclude": ["src/**/*.test.ts"]

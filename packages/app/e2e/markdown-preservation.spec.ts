@@ -77,6 +77,56 @@ test.describe("Markdown source preservation", () => {
     });
   });
 
+  test("saves and reloads fenced HTML examples without internal raw-block markers", async ({
+    page,
+  }) => {
+    const fencedHtml = [
+      "<details>",
+      "<summary>Example</summary>",
+      "  literal body",
+      "</details>",
+    ].join("\n");
+    const original = ["Before", "", "```html", fencedHtml, "```", ""].join(
+      "\n",
+    );
+    const filePath = writeProjectFile(
+      projectDir,
+      "fenced-html-example.md",
+      original,
+    );
+
+    await openMarkdownFile(page, filePath, "rich-text");
+    await richTextEditor(page).click();
+    await page.keyboard.press(
+      process.platform === "darwin" ? "Meta+Home" : "Control+Home",
+    );
+    await page.keyboard.type("Edited ");
+    await page.keyboard.press(
+      process.platform === "darwin" ? "Meta+S" : "Control+S",
+    );
+
+    await expect
+      .poll(() => readProjectFile(projectDir, "fenced-html-example.md"))
+      .toContain("{++Edited++}");
+    expect(readProjectFile(projectDir, "fenced-html-example.md")).toContain(
+      `\`\`\`html\n${fencedHtml}\n\`\`\``,
+    );
+    expect(readProjectFile(projectDir, "fenced-html-example.md")).not.toContain(
+      "data-markdown-raw-block",
+    );
+
+    await page.reload();
+    await expect(richTextEditor(page)).toContainText("literal body");
+    expect(readProjectFile(projectDir, "fenced-html-example.md")).toContain(
+      fencedHtml,
+    );
+
+    logE2eEvent("markdown-preservation.fenced-html-save-load", {
+      file: "fenced-html-example.md",
+      bytes: Buffer.byteLength(original),
+    });
+  });
+
   test("saves and reloads GFM task lists as one item per source line", async ({
     page,
   }) => {

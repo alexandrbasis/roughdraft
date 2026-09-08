@@ -16,3 +16,6 @@ sandbox
 .roughdraft-state
 /roughdraft.json
 .compound-engineering/*.local.yaml
+
+# Local verification receipts and release staging
+/.context/

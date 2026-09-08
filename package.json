@@ -1,6 +1,6 @@
 {
   "name": "@alexandrbasis/roughdraft",
-  "version": "0.1.11-basis.1",
+  "version": "0.1.12-basis.1",
   "description": "A local markdown review app",
   "license": "MIT",
   "engines": {
@@ -29,10 +29,14 @@
     "test:e2e": "playwright test --config packages/app/playwright.config.ts",
     "test:smoke": "playwright test --config packages/app/playwright.config.ts --grep @smoke",
     "test:package": "node scripts/test-package-install.mjs",
-    "test:coverage": "pnpm --filter @roughdraft/app exec vitest run --coverage && pnpm --filter @roughdraft/server exec vitest run --coverage",
-    "check": "pnpm lint && pnpm test:selectors && pnpm test && pnpm build",
+    "test:coverage": "pnpm --filter @roughdraft/rfm build && pnpm --filter @roughdraft/app exec vitest run --coverage && pnpm --filter @roughdraft/server exec vitest run --coverage",
+    "check": "pnpm lint && pnpm test:selectors && pnpm test && pnpm test:tooling && pnpm build",
     "build": "pnpm --filter @roughdraft/rfm build && pnpm --filter @roughdraft/app build && pnpm --filter @roughdraft/server build",
-    "preview": "node packages/server/bin/roughdraft.mjs open README.md"
+    "preview": "node packages/server/bin/roughdraft.mjs open README.md",
+    "release:prepare": "node scripts/prepare-release.mjs",
+    "test:tooling": "node --test scripts/*.test.mjs",
+    "upstream:check": "node scripts/check-upstream.mjs",
+    "test:review": "playwright test --config packages/app/playwright.config.ts markdown-preservation.spec.ts review-accessibility.spec.ts endmatter-replies.spec.ts embed-mode.spec.ts"
   },
   "files": [
     "FORK.md",
@@ -40,7 +44,9 @@
     "packages/server/dist",
     "packages/server/bin",
     "packages/server/defaults.mjs",
-    "packages/server/defaults.d.mts"
+    "packages/server/defaults.d.mts",
+    "packages/server/release-info.mjs",
+    "packages/server/release-info.d.mts"
   ],
   "dependencies": {
     "express": "^5.1.0",

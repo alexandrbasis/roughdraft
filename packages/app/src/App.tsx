@@ -1,3 +1,5 @@
+import packageManifest from "../../../package.json";
+import { agentSetupPrompt } from "../../server/release-info.mjs";
 import {
   ArrowLeft,
   Braces,
@@ -91,8 +93,7 @@ export function shouldWarnBeforeUnload({
   );
 }
 
-const AGENT_SETUP_PROMPT =
-  "Install the Basis fork of Roughdraft using `npm install -g https://github.com/alexandrbasis/roughdraft/releases/download/v0.1.11-basis.1/alexandrbasis-roughdraft-0.1.11-basis.1.tgz`, then read `roughdraft help agent` and set yourself up to use it.";
+const AGENT_SETUP_PROMPT = agentSetupPrompt(packageManifest);
 const PREVIEW_DOCUMENT_PATH = "preview.md";
 const PREVIEW_INITIAL_MARKDOWN = [
   "# Live Preview",

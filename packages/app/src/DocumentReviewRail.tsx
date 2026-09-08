@@ -82,7 +82,7 @@ interface DocumentReviewRailProps {
 
 function railLayoutItemClass(layout: "anchored" | "flow") {
   return cn(
-    "left-0 right-0 rounded-xl border border-transparent bg-transparent shadow-none transition-all duration-200 ease-out will-change-transform",
+    "left-0 right-0 rounded-xl border border-transparent bg-transparent shadow-none transition-all duration-200 ease-out will-change-transform focus:outline-none focus-visible:ring-2 focus-visible:ring-stone-300 dark:focus-visible:ring-slate-600",
     layout === "anchored" ? "absolute" : "relative",
   );
 }
@@ -216,7 +216,7 @@ export function DocumentReviewRail({
   editor = null,
 }: DocumentReviewRailProps) {
   const draftTextareaRef = useRef<HTMLTextAreaElement>(null);
-  const itemRefs = useRef(new Map<string, HTMLDivElement>());
+  const itemRefs = useRef(new Map<string, HTMLElement>());
   const [itemHeights, setItemHeights] = useState<Record<string, number>>({});
 
   const activeRootThreadId = useMemo(
@@ -343,7 +343,7 @@ export function DocumentReviewRail({
     suggestionEntries,
   ]);
 
-  const setItemRef = useCallback((key: string, node: HTMLDivElement | null) => {
+  const setItemRef = useCallback((key: string, node: HTMLElement | null) => {
     if (node) {
       itemRefs.current.set(key, node);
     } else {
@@ -425,7 +425,11 @@ export function DocumentReviewRail({
   }
 
   return (
-    <aside className={cn("min-w-0", className)} data-testid={testId}>
+    <aside
+      id="document-review-rail"
+      className={cn("min-w-0", className)}
+      data-testid={testId}
+    >
       <div
         className={cn(railLayout === "flow" ? "grid gap-3" : "relative")}
         style={railHeight ? { minHeight: railHeight } : undefined}
@@ -448,6 +452,14 @@ export function DocumentReviewRail({
                 ref={(node) => setItemRef(layout.key, node)}
                 data-testid={`comment-thread-${layout.thread.rootCommentId}`}
                 data-comment-thread-container="true"
+                tabIndex={isExpanded ? -1 : 0}
+                {...(isExpanded
+                  ? { role: "group", "aria-label": "Comment thread" }
+                  : {
+                      role: "button",
+                      "aria-expanded": false,
+                      "aria-label": `Expand comment thread: ${layout.thread.visibleComments[0]?.content || "Review comment"}`,
+                    })}
                 className={cn(
                   railLayoutItemClass(railLayout),
                   isSelected
@@ -466,6 +478,23 @@ export function DocumentReviewRail({
                 onClick={() => {
                   if (isExpanded || !primaryCommentId) return;
                   onFocusComment(primaryCommentId);
+                }}
+                onKeyDown={(event) => {
+                  if (
+                    isExpanded ||
+                    (event.key !== "Enter" && event.key !== " ") ||
+                    !primaryCommentId
+                  ) {
+                    return;
+                  }
+
+                  event.preventDefault();
+                  event.stopPropagation();
+                  onFocusComment(primaryCommentId);
+                  const disclosure = event.currentTarget;
+                  requestAnimationFrame(() => {
+                    if (disclosure.isConnected) disclosure.focus();
+                  });
                 }}
               >
                 <CommentEditorList

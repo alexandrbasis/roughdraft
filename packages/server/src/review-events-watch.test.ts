@@ -1,5 +1,6 @@
 import { describe, expect, it, vi } from "vitest";
 import {
+  REVIEW_WATCH_MAX_RETRIES,
   REVIEW_WATCH_POLL_SECONDS,
   waitForReviewEvents,
 } from "./review-events-watch";
@@ -88,6 +89,124 @@ describe("waitForReviewEvents", () => {
 
     await expect(waiting).resolves.toMatchObject({ timedOut: false });
     expect(pollCount).toBe(2);
+    vi.useRealTimers();
+  });
+
+  it("reconnects after a dropped long-poll socket and preserves the cursor", async () => {
+    const requestBodies: Array<Record<string, unknown>> = [];
+    let pollCount = 0;
+
+    const waiting = waitForReviewEvents({
+      fetchImpl: async (_input, init) => {
+        const body = JSON.parse(String(init?.body ?? "{}")) as Record<
+          string,
+          unknown
+        >;
+        requestBodies.push(body);
+        pollCount += 1;
+
+        if (pollCount === 1) {
+          return new Response(
+            JSON.stringify({ events: [], timedOut: true, nextSequence: 8 }),
+            { status: 200, headers: { "Content-Type": "application/json" } },
+          );
+        }
+
+        if (pollCount === 2) {
+          const error = new TypeError("fetch failed") as TypeError & {
+            cause?: { code?: string };
+          };
+          error.cause = { code: "UND_ERR_SOCKET" };
+          throw error;
+        }
+
+        return new Response(
+          JSON.stringify({
+            events: [{ type: "review.completed", sequence: 8 }],
+            timedOut: false,
+            nextSequence: 9,
+          }),
+          { status: 200, headers: { "Content-Type": "application/json" } },
+        );
+      },
+      request: {
+        projectPath: "/tmp/project",
+        path: "draft.md",
+        batchWindowSeconds: 0,
+      },
+      sleepImpl: async () => {},
+      url: new URL("http://localhost/api/review-events/watch"),
+      timeoutSeconds: 2,
+    });
+
+    await expect(waiting).resolves.toMatchObject({ timedOut: false });
+    expect(requestBodies).toHaveLength(3);
+    expect(requestBodies[1]).toMatchObject({
+      afterSequence: 7,
+      fromNow: false,
+    });
+    expect(requestBodies[2]).toMatchObject({
+      afterSequence: 7,
+      fromNow: false,
+    });
+  });
+
+  it("does not hide a permanent retryable transport failure", async () => {
+    let attempts = 0;
+    const failure = new TypeError("fetch failed") as TypeError & {
+      cause?: { code?: string };
+    };
+    failure.cause = { code: "UND_ERR_SOCKET" };
+
+    const waiting = waitForReviewEvents({
+      fetchImpl: async () => {
+        attempts += 1;
+        throw failure;
+      },
+      request: {
+        projectPath: "/tmp/project",
+        path: "draft.md",
+        batchWindowSeconds: 0,
+      },
+      sleepImpl: async () => {},
+      url: new URL("http://localhost/api/review-events/watch"),
+    });
+
+    await expect(waiting).rejects.toBe(failure);
+    expect(attempts).toBe(REVIEW_WATCH_MAX_RETRIES + 1);
+  });
+
+  it("clips retry delay to the remaining explicit deadline", async () => {
+    vi.useFakeTimers();
+    vi.setSystemTime(0);
+    const delays: number[] = [];
+    const failure = new TypeError("fetch failed") as TypeError & {
+      cause?: { code?: string };
+    };
+    failure.cause = { code: "UND_ERR_SOCKET" };
+
+    const waiting = waitForReviewEvents({
+      fetchImpl: async () => {
+        throw failure;
+      },
+      request: {
+        projectPath: "/tmp/project",
+        path: "draft.md",
+        batchWindowSeconds: 0,
+      },
+      sleepImpl: async (ms) => {
+        delays.push(ms);
+        vi.setSystemTime(Date.now() + ms);
+      },
+      timeoutSeconds: 0.05,
+      url: new URL("http://localhost/api/review-events/watch"),
+    });
+
+    await expect(waiting).resolves.toMatchObject({
+      events: [],
+      timedOut: true,
+    });
+    expect(delays).toEqual([50]);
     vi.useRealTimers();
   });
 

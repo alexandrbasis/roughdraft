@@ -24,6 +24,7 @@ export interface ReviewCompletedEvent extends ReviewCompletedEventInput {
 export interface WaitForReviewEventsOptions {
   documentPath?: string;
   afterSequence?: number;
+  signal?: AbortSignal;
   timeoutMs?: number;
   batchWindowMs?: number;
 }
@@ -37,6 +38,8 @@ export interface WaitForReviewEventsResult {
 interface Waiter {
   options: NormalizedWaitOptions;
   resolve: (result: WaitForReviewEventsResult) => void;
+  abortListener: (() => void) | null;
+  signal?: AbortSignal;
   timeout: NodeJS.Timeout | null;
   batchTimeout: NodeJS.Timeout | null;
 }
@@ -45,7 +48,7 @@ const DEFAULT_BATCH_WINDOW_MS = 250;
 const MAX_RETAINED_EVENTS = 100;
 
 type NormalizedWaitOptions = Required<
-  Omit<WaitForReviewEventsOptions, "documentPath" | "timeoutMs">
+  Omit<WaitForReviewEventsOptions, "documentPath" | "signal" | "timeoutMs">
 > & {
   documentPath?: string;
   timeoutMs?: number;
@@ -95,6 +98,10 @@ export class ReviewEventQueue {
     const normalized = normalizeWaitOptions(options);
     const existing = this.matchingEvents(normalized);
 
+    if (options.signal?.aborted) {
+      return Promise.resolve(resultForEvents([], true, this.nextSequence));
+    }
+
     if (existing.length > 0) {
       return Promise.resolve(
         resultForEvents(existing, false, this.nextSequence),
@@ -105,6 +112,8 @@ export class ReviewEventQueue {
       const waiter: Waiter = {
         options: normalized,
         resolve,
+        abortListener: null,
+        signal: options.signal,
         batchTimeout: null,
         timeout:
           normalized.timeoutMs !== undefined
@@ -115,6 +124,19 @@ export class ReviewEventQueue {
       };
 
       this.waiters.add(waiter);
+
+      if (options.signal) {
+        waiter.abortListener = () => this.resolveWaiter(waiter, true);
+        options.signal.addEventListener("abort", waiter.abortListener, {
+          once: true,
+        });
+      }
+
+      if (options.signal?.aborted) {
+        this.resolveWaiter(waiter, true);
+        return;
+      }
+
       appendSlog("review-events.wait", {
         documentPath: normalized.documentPath ?? null,
         afterSequence: normalized.afterSequence,
@@ -166,6 +188,10 @@ export class ReviewEventQueue {
     }
     if (waiter.batchTimeout) {
       clearTimeout(waiter.batchTimeout);
+    }
+    if (waiter.signal && waiter.abortListener) {
+      waiter.signal.removeEventListener("abort", waiter.abortListener);
+      waiter.abortListener = null;
     }
 
     const events = timedOut ? [] : this.matchingEvents(waiter.options);

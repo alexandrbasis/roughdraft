@@ -4,6 +4,23 @@ export const REVIEW_WATCH_POLL_SECONDS = 240;
 
 const REVIEW_WATCH_RESPONSE_GRACE_MS = 5_000;
 const REVIEW_WATCH_RETRY_DELAY_MS = 100;
+export const REVIEW_WATCH_MAX_RETRIES = 5;
+
+const RETRYABLE_WATCH_ERROR_CODES = new Set([
+  "ECONNABORTED",
+  "ECONNREFUSED",
+  "ECONNRESET",
+  "EAI_AGAIN",
+  "EHOSTUNREACH",
+  "EPIPE",
+  "ENETRESET",
+  "ENETUNREACH",
+  "ETIMEDOUT",
+  "UND_ERR_BODY_TIMEOUT",
+  "UND_ERR_CONNECT_TIMEOUT",
+  "UND_ERR_HEADERS_TIMEOUT",
+  "UND_ERR_SOCKET",
+]);
 
 export interface ReviewWatchRequest {
   projectPath: string;
@@ -46,6 +63,7 @@ export async function waitForReviewEvents(
   let needsCursorAnchor = fromNow;
   let afterSequence: number | undefined;
   let firstLongPoll = true;
+  let consecutiveRetries = 0;
 
   while (true) {
     const remainingMs =
@@ -79,20 +97,26 @@ export async function waitForReviewEvents(
       body.afterSequence = afterSequence;
     }
 
+    const responseTimeoutMs =
+      deadline === undefined
+        ? Math.max(1, pollMs + REVIEW_WATCH_RESPONSE_GRACE_MS)
+        : Math.max(
+            1,
+            Math.min(pollMs + REVIEW_WATCH_RESPONSE_GRACE_MS, remainingMs),
+          );
+    const requestController = new AbortController();
+    const responseTimeout = setTimeout(
+      () => requestController.abort(),
+      responseTimeoutMs,
+    );
+
     let payload: ReviewWatchPayload;
     try {
       const response = await options.fetchImpl(options.url, {
         method: "POST",
         headers: { "Content-Type": "application/json" },
         body: JSON.stringify(body),
-        signal: AbortSignal.timeout(
-          deadline === undefined
-            ? Math.max(1, pollMs + REVIEW_WATCH_RESPONSE_GRACE_MS)
-            : Math.max(
-                1,
-                Math.min(pollMs + REVIEW_WATCH_RESPONSE_GRACE_MS, remainingMs),
-              ),
-        ),
+        signal: requestController.signal,
       });
 
       if (!response.ok) {
@@ -105,14 +129,29 @@ export async function waitForReviewEvents(
         throw error;
       }
 
+      consecutiveRetries += 1;
+      if (consecutiveRetries > REVIEW_WATCH_MAX_RETRIES) {
+        throw error;
+      }
+
       if (deadline !== undefined && Date.now() >= deadline) {
         return timeoutPayload(afterSequence);
       }
 
-      await sleepImpl(REVIEW_WATCH_RETRY_DELAY_MS);
+      const retryRemainingMs =
+        deadline === undefined
+          ? Number.POSITIVE_INFINITY
+          : deadline - Date.now();
+      if (retryRemainingMs <= 0) {
+        return timeoutPayload(afterSequence);
+      }
+      await sleepImpl(Math.min(REVIEW_WATCH_RETRY_DELAY_MS, retryRemainingMs));
       continue;
+    } finally {
+      clearTimeout(responseTimeout);
     }
 
+    consecutiveRetries = 0;
     const nextSequence = sequenceFromPayload(payload);
     if (nextSequence !== undefined) {
       // The server returns the next unassigned sequence, while the watch API
@@ -168,8 +207,8 @@ function isRetryableWatchError(error: unknown): boolean {
     return true;
   }
   if (
-    candidate.code === "UND_ERR_HEADERS_TIMEOUT" ||
-    candidate.code === "UND_ERR_BODY_TIMEOUT"
+    typeof candidate.code === "string" &&
+    RETRYABLE_WATCH_ERROR_CODES.has(candidate.code)
   ) {
     return true;
   }

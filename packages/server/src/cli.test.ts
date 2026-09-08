@@ -1,3 +1,5 @@
+import { agentSetupPrompt } from "../release-info.mjs";
+import { readInstalledManifest } from "./update-status";
 import fs from "node:fs";
 import { createServer as createHttpServer, type Server } from "node:http";
 import os from "node:os";
@@ -1609,9 +1611,7 @@ describe("cli", () => {
     expect(test.logs).toContain(
       "To set up your coding agent, paste this into it:",
     );
-    expect(test.logs).toContain(
-      "Install the Basis fork of Roughdraft using `npm install -g https://github.com/alexandrbasis/roughdraft/releases/download/v0.1.11-basis.1/alexandrbasis-roughdraft-0.1.11-basis.1.tgz`, then read `roughdraft help agent` and set yourself up to use it.",
-    );
+    expect(test.logs).toContain(agentSetupPrompt(readInstalledManifest()));
     expect(test.logs).toContain(
       "This command only prints setup text. It does not edit agent instruction files.",
     );
