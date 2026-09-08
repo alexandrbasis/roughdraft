@@ -696,6 +696,254 @@ const command = "{==roughdraft open==}{>>test<<}{id="c1" by="user" at="2026-04-2
     expect(editorStateToCriticMarkdown(doc, comments)).toBe(input);
   });
 
+  it("preserves multiline whitespace around a comment inside a fenced code block", () => {
+    const input = [
+      "```ts",
+      [
+        "const key = (patientId: string) => `timeline:v1:",
+        "$",
+        "{patientId}`",
+      ].join(""),
+      "",
+      "export async function invalidate(redis: Redis, patientId: string) {",
+      '  {==await redis.del(key(patientId))==}{>>Check invalidation<<}{id="c1" by="user" at="2026-09-08T10:00:00.000Z"}',
+      "}",
+      "```",
+      "",
+    ].join("\n");
+
+    const { doc, comments } = criticMarkdownToEditorState(input);
+
+    expect(editorStateToCriticMarkdown(doc, comments)).toBe(input);
+  });
+
+  it("preserves every fenced-code suggestion form, nested comments, and raw text", () => {
+    const createdAt = "2026-09-08T10:00:00.000Z";
+    const doc = {
+      type: "doc",
+      content: [
+        {
+          type: "codeBlock",
+          attrs: { language: "ts" },
+          content: [
+            { type: "text", text: "\n\n  " },
+            {
+              type: "text",
+              text: "<tag> & value",
+              marks: [
+                {
+                  type: "commentRef",
+                  attrs: { commentIds: ["c1", "c2"] },
+                },
+                {
+                  type: "criticChange",
+                  attrs: {
+                    kind: "addition",
+                    changeId: "s1",
+                    authorType: "user",
+                    authorId: "user",
+                    createdAt,
+                  },
+                },
+              ],
+            },
+            { type: "text", text: "\n  " },
+            {
+              type: "text",
+              text: "deleted",
+              marks: [
+                {
+                  type: "criticChange",
+                  attrs: {
+                    kind: "deletion",
+                    changeId: "s2",
+                    authorType: "ai",
+                    authorId: null,
+                    createdAt,
+                  },
+                },
+              ],
+            },
+            { type: "text", text: "\n  " },
+            {
+              type: "text",
+              text: "old",
+              marks: [
+                {
+                  type: "criticChange",
+                  attrs: {
+                    kind: "substitution-old",
+                    changeId: "s3",
+                    authorType: "user",
+                    authorId: "user",
+                    createdAt,
+                  },
+                },
+              ],
+            },
+            {
+              type: "text",
+              text: "new",
+              marks: [
+                {
+                  type: "criticChange",
+                  attrs: {
+                    kind: "substitution-new",
+                    changeId: "s3",
+                    authorType: "user",
+                    authorId: "user",
+                    createdAt,
+                  },
+                },
+              ],
+            },
+            { type: "text", text: "\n\n\n" },
+            {
+              type: "text",
+              text: "commented",
+              marks: [
+                {
+                  type: "commentRef",
+                  attrs: { commentIds: ["c3"] },
+                },
+              ],
+            },
+          ],
+        },
+      ],
+    };
+    const comments = new Map([
+      [
+        "c1",
+        {
+          id: "c1",
+          content: "Check the escaped value.",
+          createdAt,
+          authorType: "user" as const,
+          authorId: "user",
+        },
+      ],
+      [
+        "c2",
+        {
+          id: "c2",
+          content: "Nested follow-up.",
+          createdAt,
+          authorType: "ai" as const,
+          authorId: null,
+          parentCommentId: "c1",
+        },
+      ],
+      [
+        "c3",
+        {
+          id: "c3",
+          content: "Keep the indentation.",
+          createdAt,
+          authorType: "user" as const,
+          authorId: "user",
+        },
+      ],
+    ]);
+
+    expect(editorStateToCriticMarkdown(doc, comments)).toBe(
+      [
+        "```ts",
+        "",
+        "",
+        '  {++<tag> & value++}{id="s1" by="user" at="2026-09-08T10:00:00.000Z"}{>>Check the escaped value.<<}{id="c1" by="user" at="2026-09-08T10:00:00.000Z"}{>>Nested follow-up.<<}{id="c2" by="AI" at="2026-09-08T10:00:00.000Z" re="c1"}',
+        '  {--deleted--}{id="s2" by="AI" at="2026-09-08T10:00:00.000Z"}',
+        '  {~~old~>new~~}{id="s3" by="user" at="2026-09-08T10:00:00.000Z"}',
+        "",
+        "",
+        '{==commented==}{>>Keep the indentation.<<}{id="c3" by="user" at="2026-09-08T10:00:00.000Z"}',
+        "```",
+        "",
+      ].join("\n"),
+    );
+  });
+
+  it("uses a longer fence when annotated code contains a triple-backtick line", () => {
+    const input = [
+      "````ts",
+      'const marker = "```";',
+      "  ```",
+      '{==return x;==}{>>Keep this line<<}{id="c-fence" by="user" at="2026-09-08T10:00:00.000Z"}',
+      "````",
+      "",
+    ].join("\n");
+
+    const { doc, comments } = criticMarkdownToEditorState(input);
+
+    expect(editorStateToCriticMarkdown(doc, comments)).toBe(input);
+  });
+
+  it.each([
+    [
+      "blockquote",
+      [
+        "> ```ts",
+        "> const x = 1;",
+        "> ",
+        "> ",
+        "> # heading inside code",
+        "> ",
+        '> {==return x;==}{>>Keep blockquote whitespace<<}{id="c-quote" by="user" at="2026-09-08T10:00:00.000Z"}',
+        "> ```",
+        "",
+      ].join("\n"),
+    ],
+    [
+      "list",
+      [
+        "- Item",
+        "  ",
+        "  ```ts",
+        "  const x = 1;",
+        "  ",
+        "  ",
+        "  # heading inside code",
+        "  ",
+        '  {==return x;==}{>>Keep list whitespace<<}{id="c-list" by="user" at="2026-09-08T10:00:00.000Z"}',
+        "  ```",
+        "",
+      ].join("\n"),
+    ],
+  ])("preserves blank lines and headings in a fenced code block nested in a %s", (_container, input) => {
+    const { doc, comments } = criticMarkdownToEditorState(input);
+
+    expect(editorStateToCriticMarkdown(doc, comments)).toBe(input);
+  });
+
+  it("does not add an extra raw newline after annotated code content", () => {
+    const input = [
+      "```ts",
+      '{==return x;==}{>>Keep final line<<}{id="c-final" by="user" at="2026-09-08T10:00:00.000Z"}',
+      "```",
+      "",
+    ].join("\n");
+
+    const { doc, comments } = criticMarkdownToEditorState(input);
+    const codeText = doc.content?.[0]?.content
+      ?.map((node) => node.text ?? "")
+      .join("");
+
+    expect(codeText).toBe("return x;");
+    expect(codeText).not.toMatch(/\n$/);
+    expect(editorStateToCriticMarkdown(doc, comments)).toBe(input);
+  });
+
+  it("preserves GFM task-list item lines through a rich-text round-trip", () => {
+    const input = [
+      "## Reviews",
+      "- [ ] Claude reviewed",
+      "- [x] Codex reviewed",
+      "",
+    ].join("\n");
+
+    expect(richTextRoundTrip(input)).toBe(input);
+  });
+
   it("round-trips an anchored reply thread", () => {
     const input =
       'Please revisit {==this sentence==}{>>Needs a source<<}{id="c1" by="user" at="2024-01-15T10:30:00.000Z"}{>>I can add one from the intro.<<}{id="c2" by="AI" at="2024-01-15T10:31:00.000Z" re="c1"}.\n';

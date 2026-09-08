@@ -824,6 +824,29 @@
   will-change: transform;
 }
 
+/* A host panel supplies the surrounding frame in embed mode. Keep the same
+ * editor and review controls, with readable text insets inside the document. */
+[data-document-embed="true"] {
+  padding-inline: 0;
+  padding-bottom: 0;
+  background: var(--card);
+}
+
+[data-document-embed="true"] .document-page-header {
+  padding-inline: 1rem;
+}
+
+[data-document-embed="true"] .document-content-card {
+  min-height: calc(100dvh - 5rem);
+  border: 0;
+  border-radius: 0;
+  box-shadow: none;
+}
+
+[data-document-embed="true"] .document-content-inset {
+  padding-bottom: 0;
+}
+
 @media (prefers-reduced-motion: reduce) {
   .review-layout-grid {
     transition: none;

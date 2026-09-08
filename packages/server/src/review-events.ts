@@ -183,7 +183,7 @@ function normalizeWaitOptions(
     afterSequence: Math.max(0, options.afterSequence ?? 0),
     timeoutMs:
       options.timeoutMs !== undefined
-        ? clamp(options.timeoutMs, 0, 300_000)
+        ? normalizeTimeoutMs(options.timeoutMs)
         : undefined,
     batchWindowMs: clamp(
       options.batchWindowMs ?? DEFAULT_BATCH_WINDOW_MS,
@@ -217,6 +217,11 @@ function resultForEvents(
 function clamp(value: number, min: number, max: number): number {
   if (!Number.isFinite(value)) return min;
   return Math.min(max, Math.max(min, value));
+}
+
+function normalizeTimeoutMs(value: number): number {
+  if (!Number.isFinite(value)) return 0;
+  return Math.min(2_147_483_647, Math.max(0, value));
 }
 
 function appendSlog(event: string, data: Record<string, unknown>): void {

@@ -16,12 +16,15 @@ import {
   ROUGHDRAFT_PUBLIC_HOST,
 } from "./network.js";
 import { findAvailablePort } from "./ports.js";
+import { waitForReviewEvents } from "./review-events-watch.js";
 import { resolveUpdateStatus, type UpdateStatus } from "./update-status.js";
 
-const AGENT_SETUP_URL = "https://roughdraft.md/setup.md";
+const AGENT_SETUP_URL =
+  "https://github.com/alexandrbasis/roughdraft#agent-setup";
 const ROUGHDRAFT_FLAVORED_MARKDOWN_SPEC_URL =
   "https://roughdraft.md/spec/roughdraft-flavored-markdown.md";
-const AGENT_SETUP_PROMPT = `Install Roughdraft for me using \`npm i -g roughdraft\`, then read ${AGENT_SETUP_URL} and set yourself up to use it.`;
+const AGENT_SETUP_PROMPT =
+  "Install the Basis fork of Roughdraft using `npm install -g https://github.com/alexandrbasis/roughdraft/releases/download/v0.1.11-basis.1/alexandrbasis-roughdraft-0.1.11-basis.1.tgz`, then read `roughdraft help agent` and set yourself up to use it.";
 const STATUS_PATH = "/api/status";
 const STATUS_TIMEOUT_MS = 750;
 const SERVER_WAIT_ATTEMPTS = 40;
@@ -2117,43 +2120,18 @@ async function runWatch(
     serverUrl = result.server.url;
   }
   const relativePath = path.relative(target.projectDir, target.openPath);
-  const body: {
-    projectPath: string;
-    path: string;
-    timeoutSeconds?: number;
-    batchWindowSeconds: number;
-    fromNow: boolean;
-  } = {
-    projectPath: target.projectDir,
-    path: relativePath,
-    batchWindowSeconds: options.batchWindowSeconds,
+  const payload = await waitForReviewEvents({
+    fetchImpl: deps.fetchImpl,
     fromNow: !options.replay,
-  };
-  if (options.timeoutSeconds !== undefined) {
-    body.timeoutSeconds = options.timeoutSeconds;
-  }
-
-  const response = await deps.fetchImpl(
-    new URL("/api/review-events/watch", serverUrl),
-    {
-      method: "POST",
-      headers: { "Content-Type": "application/json" },
-      body: JSON.stringify(body),
-      ...(options.timeoutSeconds !== undefined
-        ? { signal: AbortSignal.timeout((options.timeoutSeconds + 5) * 1000) }
-        : {}),
+    request: {
+      projectPath: target.projectDir,
+      path: relativePath,
+      batchWindowSeconds: options.batchWindowSeconds,
     },
-  );
-
-  if (!response.ok) {
-    throw new Error(`Failed to watch review events: ${response.status}`);
-  }
-
-  const payload = (await response.json()) as {
-    events?: unknown[];
-    timedOut?: boolean;
-    nextSequence?: number;
-  };
+    sleepImpl: deps.sleepImpl,
+    timeoutSeconds: options.timeoutSeconds,
+    url: new URL("/api/review-events/watch", serverUrl),
+  });
 
   if (json) {
     emitJson(deps.log, payload);

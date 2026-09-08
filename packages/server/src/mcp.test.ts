@@ -28,14 +28,33 @@ describe("mcp", () => {
     fs.rmSync(tempDir, { recursive: true, force: true });
   });
 
-  it("omits timeoutSeconds from review watch calls unless the tool caller provides one", async () => {
+  it("uses bounded polls when no timeout is supplied and preserves explicit timeouts", async () => {
     const requestBodies: Array<Record<string, unknown>> = [];
+    let watchCount = 0;
     const fetchImpl: typeof fetch = async (_input, init) => {
-      requestBodies.push(JSON.parse(String(init?.body ?? "{}")));
-      return new Response(JSON.stringify({ events: [], timedOut: false }), {
-        status: 200,
-        headers: { "Content-Type": "application/json" },
-      });
+      const body = JSON.parse(String(init?.body ?? "{}")) as Record<
+        string,
+        unknown
+      >;
+      requestBodies.push(body);
+      watchCount += 1;
+      if (body.timeoutSeconds === 0) {
+        return new Response(
+          JSON.stringify({ events: [], timedOut: true, nextSequence: 1 }),
+          { status: 200, headers: { "Content-Type": "application/json" } },
+        );
+      }
+      return new Response(
+        JSON.stringify({
+          events: [{ type: "review.completed", documentPath }],
+          timedOut: false,
+          nextSequence: 2,
+        }),
+        {
+          status: 200,
+          headers: { "Content-Type": "application/json" },
+        },
+      );
     };
 
     await callTool(
@@ -56,10 +75,75 @@ describe("mcp", () => {
       path: "draft.md",
       batchWindowSeconds: 0.25,
       fromNow: true,
+      timeoutSeconds: 0,
     });
-    expect(requestBodies[0]).not.toHaveProperty("timeoutSeconds");
     expect(requestBodies[1]).toMatchObject({
+      afterSequence: 0,
+      fromNow: false,
+      timeoutSeconds: 240,
+    });
+    expect(requestBodies[2]).toMatchObject({
+      fromNow: true,
+      timeoutSeconds: 0,
+    });
+    expect(requestBodies[3]).toMatchObject({
       timeoutSeconds: 5,
+    });
+    expect(watchCount).toBe(4);
+  });
+
+  it("re-polls after a bounded timeout and carries the previous sequence", async () => {
+    const requestBodies: Array<Record<string, unknown>> = [];
+    let watchCount = 0;
+    const fetchImpl: typeof fetch = async (_input, init) => {
+      const body = JSON.parse(String(init?.body ?? "{}")) as Record<
+        string,
+        unknown
+      >;
+      requestBodies.push(body);
+      watchCount += 1;
+
+      if (watchCount === 1) {
+        return new Response(
+          JSON.stringify({ events: [], timedOut: true, nextSequence: 1 }),
+          { status: 200, headers: { "Content-Type": "application/json" } },
+        );
+      }
+      if (watchCount === 2) {
+        return new Response(
+          JSON.stringify({ events: [], timedOut: true, nextSequence: 2 }),
+          { status: 200, headers: { "Content-Type": "application/json" } },
+        );
+      }
+
+      return new Response(
+        JSON.stringify({
+          events: [{ documentPath, type: "review.completed" }],
+          timedOut: false,
+          nextSequence: 3,
+        }),
+        { status: 200, headers: { "Content-Type": "application/json" } },
+      );
+    };
+
+    const result = await callTool(
+      "roughdraft_watch_review_events",
+      { documentPath, projectPath: projectDir },
+      { ROUGHDRAFT_STATE_FILE: stateFile },
+      fetchImpl,
+    );
+
+    expect(result).toMatchObject({ timedOut: false });
+    expect(requestBodies).toHaveLength(3);
+    expect(requestBodies[1]).toMatchObject({
+      afterSequence: 0,
+      fromNow: false,
+      timeoutSeconds: 240,
+    });
+    expect(requestBodies[2]).toMatchObject({
+      afterSequence: 1,
+      fromNow: false,
+      timeoutSeconds: 240,
     });
   });
 

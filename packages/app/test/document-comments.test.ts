@@ -210,6 +210,188 @@ describe("document comment layout helpers", () => {
     ]);
   });
 
+  it("includes endmatter-only child replies in the anchored root thread", () => {
+    const comments = createCommentsMap([
+      {
+        id: "c1",
+        content: "Anchored root",
+        createdAt: "2026-04-24T00:00:00.000Z",
+      },
+      {
+        id: "c2",
+        content: "Endmatter-only reply",
+        createdAt: "2026-04-24T00:00:01.000Z",
+        parentCommentId: "c1",
+      },
+    ]);
+
+    const items = buildCommentThreadRailItems(
+      [
+        {
+          key: "c1",
+          commentIds: ["c1"],
+          anchorTop: 200,
+          anchorBottom: 214,
+        },
+      ],
+      comments,
+    );
+
+    expect(items[0]?.commentIds).toEqual(["c1", "c2"]);
+  });
+
+  it("includes endmatter-only grandchildren without pulling in unrelated roots", () => {
+    const comments = createCommentsMap([
+      {
+        id: "c1",
+        content: "Anchored root",
+        createdAt: "2026-04-24T00:00:00.000Z",
+      },
+      {
+        id: "c2",
+        content: "Endmatter-only reply",
+        createdAt: "2026-04-24T00:00:01.000Z",
+        parentCommentId: "c1",
+      },
+      {
+        id: "c3",
+        content: "Endmatter-only grandchild",
+        createdAt: "2026-04-24T00:00:02.000Z",
+        parentCommentId: "c2",
+      },
+      {
+        id: "c4",
+        content: "Unrelated document comment",
+        createdAt: "2026-04-24T00:00:03.000Z",
+        scope: "document",
+      },
+      {
+        id: "c5",
+        content: "Reply to unrelated comment",
+        createdAt: "2026-04-24T00:00:04.000Z",
+        parentCommentId: "c4",
+      },
+    ]);
+
+    const items = buildCommentThreadRailItems(
+      [
+        {
+          key: "c1",
+          commentIds: ["c1"],
+          anchorTop: 200,
+          anchorBottom: 214,
+        },
+      ],
+      comments,
+    );
+
+    expect(items).toHaveLength(1);
+    expect(items[0]?.commentIds).toEqual(["c1", "c2", "c3"]);
+  });
+
+  it("does not duplicate a reply that is already anchored inline", () => {
+    const comments = createCommentsMap([
+      {
+        id: "c1",
+        content: "Anchored root",
+        createdAt: "2026-04-24T00:00:00.000Z",
+      },
+      {
+        id: "c2",
+        content: "Inline reply",
+        createdAt: "2026-04-24T00:00:01.000Z",
+        parentCommentId: "c1",
+      },
+      {
+        id: "c3",
+        content: "Endmatter-only reply",
+        createdAt: "2026-04-24T00:00:02.000Z",
+        parentCommentId: "c1",
+      },
+    ]);
+
+    const items = buildCommentThreadRailItems(
+      [
+        {
+          key: "c1::c2",
+          commentIds: ["c1", "c2"],
+          anchorTop: 200,
+          anchorBottom: 214,
+        },
+      ],
+      comments,
+    );
+
+    expect(items[0]?.commentIds).toEqual(["c1", "c2", "c3"]);
+  });
+
+  it("leaves an anchored orphan reply isolated from its missing parent descendants", () => {
+    const comments = createCommentsMap([
+      {
+        id: "c2",
+        content: "Anchored orphan",
+        createdAt: "2026-04-24T00:00:01.000Z",
+        parentCommentId: "missing",
+      },
+      {
+        id: "c3",
+        content: "Reply to orphan",
+        createdAt: "2026-04-24T00:00:02.000Z",
+        parentCommentId: "c2",
+      },
+      {
+        id: "c4",
+        content: "Separate root",
+        createdAt: "2026-04-24T00:00:03.000Z",
+      },
+    ]);
+
+    const items = buildCommentThreadRailItems(
+      [
+        {
+          key: "c2",
+          commentIds: ["c2"],
+          anchorTop: 200,
+          anchorBottom: 214,
+        },
+      ],
+      comments,
+    );
+
+    expect(items[0]?.commentIds).toEqual(["c2"]);
+  });
+
+  it("does not traverse a malformed cyclic ancestry", () => {
+    const comments = createCommentsMap([
+      {
+        id: "c1",
+        content: "Cyclic comment",
+        createdAt: "2026-04-24T00:00:00.000Z",
+        parentCommentId: "c2",
+      },
+      {
+        id: "c2",
+        content: "Cyclic reply",
+        createdAt: "2026-04-24T00:00:01.000Z",
+        parentCommentId: "c1",
+      },
+    ]);
+
+    const items = buildCommentThreadRailItems(
+      [
+        {
+          key: "c1",
+          commentIds: ["c1"],
+          anchorTop: 200,
+          anchorBottom: 214,
+        },
+      ],
+      comments,
+    );
+
+    expect(items[0]?.commentIds).toEqual(["c1"]);
+  });
+
   it("aligns the selected secondary root thread to the shared anchor", () => {
     const layouts = resolveCommentThreadRailLayouts(
       [

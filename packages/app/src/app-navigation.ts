@@ -158,10 +158,12 @@ export function buildLocationForLinkedMarkdownDocument({
   );
   const targetPath = decodeURI(targetUrl.pathname);
   const url = new URL(window.location.href);
+  const embedded = url.searchParams.get("embed") === "1";
 
   url.pathname = "/";
   url.search = "";
   url.searchParams.set("path", targetPath);
+  if (embedded) url.searchParams.set("embed", "1");
   url.hash = linkedPath.hash;
 
   return `${url.pathname}${url.search}${url.hash}`;

@@ -28,6 +28,9 @@ jobs:
       - name: Run repo checks
         run: pnpm check
 
+      - name: Verify packed CLI installation
+        run: pnpm test:package
+
       - name: Install Playwright Chromium
         run: pnpm exec playwright install --with-deps chromium
 

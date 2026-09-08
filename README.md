@@ -1,20 +1,46 @@
-# Roughdraft
-A local-first markdown editor and viewer for working with AI.
+# Roughdraft, Basis fork
 
-{==Open one markdown file on your machine. Review it, comment on it, and suggest edits.==}{>>What does this mean?<<}{id="c3" by="user" at="2026-04-30T20:18:51.163Z"}{>>It means Roughdraft works with a normal local Markdown file: you open one .md file from your computer, read it in the app, leave inline comments, and propose edits that are saved back into the Markdown using CriticMarkup.<<}{id="c4" by="AI" at="2026-04-30T20:19:39.000Z" re="c3"}{>>cjool<<}{id="c5" by="user" at="2026-05-07T20:38:25.621Z" re="c4"}
+A local Markdown editor for reviewing documents with coding agents. This fork of
+[Lex-Inc/roughdraft](https://github.com/Lex-Inc/roughdraft) keeps the original MIT
+license and stores comments and suggestions in the Markdown file.
 
-Paste this into your coding agent:
+## Install this fork
 
-```text
-Install Roughdraft for me using `npm i -g roughdraft`, then read https://roughdraft.md/setup.md and set yourself up to use it.
-```
-
-Or install and open a file yourself:
+Use Node.js 22 or newer. Install the built package from this fork's GitHub release:
 
 ```bash
-npm i -g roughdraft
+npm install -g https://github.com/alexandrbasis/roughdraft/releases/download/v0.1.11-basis.1/alexandrbasis-roughdraft-0.1.11-basis.1.tgz
+roughdraft --version
 roughdraft open /absolute/path/to/file.md
 ```
+
+The version should be `0.1.11-basis.1`. The package is named
+`@alexandrbasis/roughdraft`; the executable remains `roughdraft`. Installing it
+globally shares the executable name with the original package.
+The unscoped npm package `roughdraft` installs the original upstream version.
+
+If the original package is installed globally, remove it with
+`npm uninstall -g roughdraft` before installing this fork under the same command.
+
+To try this checkout alongside your installed CLI, follow [Local development](#local-development)
+and use its separate `roughdraft-dev-<worktree>` command.
+
+## Changes in this fork
+
+See [fork provenance and verification](FORK.md) for the upstream reports and release checks.
+
+- Long CLI and MCP reviews wait across bounded requests, with an event cursor that
+  preserves completion events between requests. An explicit timeout still limits
+  the whole wait.
+- Comments and suggestions inside fenced code preserve whitespace. Task-list
+  serialization keeps checkbox syntax readable.
+- Replies stored in YAML endmatter appear in their comment threads after reload.
+- The built package includes the private Markdown module and declares its runtime
+  dependencies, so it can be installed outside this monorepo.
+- Add `&embed=1` to a document URL for a compact panel layout. The same editor,
+  comments, save status, and review handoff remain available. Try `/preview?embed=1`
+  without opening a file.
+
 ## What is this?
 Roughdraft is a local-first markdown editor and viewer that runs on your computer.
 
@@ -33,10 +59,9 @@ Roughdraft opens a single markdown file directly for CriticMarkup comments and s
 - **No cloud, no account, no telemetry** — Runs entirely on your machine
   
 ## Quick start
-Install Roughdraft and start the local server:
+After installing this fork, start the local server:
 
 ```bash
-npm i -g roughdraft
 roughdraft start
 ```
 
@@ -135,24 +160,18 @@ pnpm check
 ## Publishing
 Roughdraft publishes from `main` when the root `package.json` version is newer than the current npm `latest` version.
 
-Release flow:
+Release checks for this fork:
 
-1. Bump the root `package.json` version in a pull request.
-  
-2. Merge the pull request to `main`.
-  
-3. The `Publish to npm` GitHub Actions workflow runs `pnpm check`, publishes the package if that exact version is not already on npm and is newer than `latest`, then creates a `v<version>` git tag.
-  
-
-The workflow uses npm trusted publishing, so npm must be configured with this trusted publisher:
-
-```text
-Owner: Lex-Inc
-Repository: roughdraft
-Workflow filename: publish.yml
+```bash
+pnpm check
+pnpm test:smoke
+pnpm test:package
 ```
 
-No `NPM_TOKEN` secret is required.
+`test:package` packs the built checkout, installs the archive in clean temporary
+projects with npm and pnpm, and runs the installed CLI. Publish the resulting
+archive as a GitHub release asset. The inherited npm publishing workflow is
+restricted to `Lex-Inc/roughdraft` and does not publish from this fork.
 ## Files on disk
 ```
 my-essay/
@@ -162,13 +181,17 @@ my-essay/
 
 Roughdraft reads and writes the markdown file directly.
 ## Agent setup
-If you want your local agent to remember the Roughdraft workflow, ask it to read the live setup prompt:
+
+After installing this fork, ask your coding agent to read the local help:
 
 ```text
-Install Roughdraft for me using `npm i -g roughdraft`, then read https://roughdraft.md/setup.md and set yourself up to use it.
+Read `roughdraft help agent` and `roughdraft help criticmarkup`, then use Roughdraft for Markdown reviews.
 ```
 
-Use `roughdraft help`, `roughdraft help agent`, or `roughdraft help criticmarkup` if you need a local refresher.
+In Codex, run `roughdraft open /absolute/path/to/file.md --no-open`, open the printed
+URL in the in-app browser, and keep the command attached until you finish reviewing.
+Append `&embed=1` to that URL for compact mode.
+
 ## CLI reference
 ```text
 roughdraft [flags] <command> [args]

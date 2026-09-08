@@ -10,7 +10,7 @@ import {
 } from "../src/App";
 
 const AGENT_SETUP_PROMPT =
-  "Install Roughdraft for me using `npm i -g roughdraft`, then read https://roughdraft.md/setup.md and set yourself up to use it.";
+  "Install the Basis fork of Roughdraft using `npm install -g https://github.com/alexandrbasis/roughdraft/releases/download/v0.1.11-basis.1/alexandrbasis-roughdraft-0.1.11-basis.1.tgz`, then read `roughdraft help agent` and set yourself up to use it.";
 
 function createDomRect({
   left = 0,
@@ -320,7 +320,7 @@ describe("Homepage", () => {
     expect(cta.className).toContain("px-5");
     expect(cta.className).toContain("text-[clamp(");
     const githubLink = container.querySelector(
-      'a[href="https://github.com/Lex-Inc/roughdraft"]',
+      'a[href="https://github.com/alexandrbasis/roughdraft"]',
     );
 
     expect(container.textContent).not.toContain("Try live preview");
