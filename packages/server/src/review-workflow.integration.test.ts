@@ -105,16 +105,29 @@ async function terminateProcess(
   }
 }
 
-async function waitForServer(baseUrl: string): Promise<void> {
+async function waitForServer(
+  baseUrl: string,
+  processHandle: SpawnedProcess,
+): Promise<void> {
   const deadline = Date.now() + 8_000;
   while (Date.now() < deadline) {
+    const { child } = processHandle;
+    if (child.exitCode !== null || child.signalCode !== null) {
+      throw new Error(
+        `Server exited (${child.signalCode ?? child.exitCode}) before becoming ready.\n${processHandle.stderr()}`,
+      );
+    }
     try {
-      const response = await fetch(`${baseUrl}/api/status`);
+      const response = await fetch(`${baseUrl}/api/status`, {
+        signal: AbortSignal.timeout(Math.max(1, deadline - Date.now())),
+      });
       if (response.ok) return;
     } catch {}
     await new Promise((resolve) => setTimeout(resolve, 25));
   }
-  throw new Error(`Timed out waiting for ${baseUrl}/api/status.`);
+  throw new Error(
+    `Timed out waiting for ${baseUrl}/api/status.\n${processHandle.stderr()}`,
+  );
 }
 
 async function waitForWatcher(
@@ -365,7 +378,7 @@ describe("real CLI and stdio MCP review workflow", () => {
     );
     children.push(serverProcess.child);
     const baseUrl = `http://127.0.0.1:${port}`;
-    await waitForServer(baseUrl);
+    await waitForServer(baseUrl, serverProcess);
     fs.mkdirSync(path.dirname(stateFile), { recursive: true });
     fs.writeFileSync(
       stateFile,

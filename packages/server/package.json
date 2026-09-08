@@ -6,8 +6,8 @@
   "scripts": {
     "build": "pnpm --filter @roughdraft/rfm build && tsc --emitDeclarationOnly && node ../../scripts/build-server.mjs",
     "dev": "tsx watch src/dev.ts",
-    "test": "vitest run",
-    "test:integration": "vitest run src/review-workflow.integration.test.ts"
+    "test": "pnpm --filter @roughdraft/rfm build && vitest run",
+    "test:integration": "pnpm --filter @roughdraft/rfm build && vitest run src/review-workflow.integration.test.ts"
   },
   "dependencies": {
     "@roughdraft/rfm": "workspace:*",

@@ -29,7 +29,7 @@
     "test:e2e": "playwright test --config packages/app/playwright.config.ts",
     "test:smoke": "playwright test --config packages/app/playwright.config.ts --grep @smoke",
     "test:package": "node scripts/test-package-install.mjs",
-    "test:coverage": "pnpm --filter @roughdraft/app exec vitest run --coverage && pnpm --filter @roughdraft/server exec vitest run --coverage",
+    "test:coverage": "pnpm --filter @roughdraft/rfm build && pnpm --filter @roughdraft/app exec vitest run --coverage && pnpm --filter @roughdraft/server exec vitest run --coverage",
     "check": "pnpm lint && pnpm test:selectors && pnpm test && pnpm test:tooling && pnpm build",
     "build": "pnpm --filter @roughdraft/rfm build && pnpm --filter @roughdraft/app build && pnpm --filter @roughdraft/server build",
     "preview": "node packages/server/bin/roughdraft.mjs open README.md",
