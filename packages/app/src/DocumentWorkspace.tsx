@@ -1334,12 +1334,7 @@ export function DocumentWorkspace({
       draft.revision !== draftRecordRef.current?.revision,
   );
   const anyOtherDraftPending = otherTabDraftPending || serverDraftPending;
-  const effectiveSaveState =
-    draftStorageError || saveState === "error"
-      ? "error"
-      : anyOtherDraftPending
-        ? "unsaved"
-        : saveState;
+  const effectiveSaveState = draftStorageError ? "error" : saveState;
   const draftRecoveryNoticeVisible =
     draftIsSafeRecovered || draftHasDiskConflict;
   const hasTopNotice =

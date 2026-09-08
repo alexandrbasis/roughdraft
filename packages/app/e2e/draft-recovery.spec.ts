@@ -124,6 +124,19 @@ test.describe("durable browser drafts", () => {
     };
     await context.route("**/api/markdown-file**", failPut);
 
+    // Closing a tab can cancel its final mirror PUT after an older revision
+    // reached the server. Keep that copy to exercise revision-safe cleanup.
+    await page.route("**/api/reviews/drafts", async (route) => {
+      if (route.request().method() !== "PUT") return route.continue();
+      const draft = route.request().postDataJSON().draft;
+      if (draft.content.includes(draftText)) {
+        logE2eEvent("closedtab.source-put-aborted", {
+          revision: draft.revision,
+        });
+        return route.abort("connectionfailed");
+      }
+      await route.continue();
+    });
     await openMarkdownFile(page, filePath, "code");
     await appendInCodeEditor(page, `\n${draftText}\n`);
     await expect(documentSaveStatus(page)).toHaveAttribute(
@@ -151,6 +164,17 @@ test.describe("durable browser drafts", () => {
       "Saved",
     );
     await expect(newTab.getByTestId("draft-recovery-notice")).toHaveCount(0);
+    await expect(newTab.getByTestId("draft-recovery-other")).toBeEnabled();
+    const remaining = await newTab.request.get(
+      `/api/reviews/drafts?${new URLSearchParams({ documentPath: fs.realpathSync(filePath) })}`,
+    );
+    const { drafts } = await remaining.json();
+    expect(drafts).toHaveLength(1);
+    expect(drafts[0].content).not.toContain(draftText);
+    logE2eEvent("closedtab.saved-with-retained-source", {
+      status: await documentSaveStatus(newTab).getAttribute("aria-label"),
+      retainedDrafts: drafts.length,
+    });
   });
 
   test("recovers a server-confirmed draft in a separate browser @smoke", async ({
