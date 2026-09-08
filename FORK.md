@@ -89,7 +89,7 @@ isolated npm and pnpm installations; and publishes it with its checksum and
 commit manifest. A failed verification cannot reach the publish job. Existing
 releases are not overwritten on a retry.
 
-Tags ending in the Basis channel (such as `v0.1.14-basis.3`) trigger this workflow.
+Tags ending in the Basis channel (such as `v0.1.14-basis.4`) trigger this workflow.
 The original npm publication workflow runs only in `Lex-Inc/roughdraft`.
 
 Download both the archive and `SHA256SUMS.txt` from the release into one directory,
@@ -97,7 +97,7 @@ then verify before installing:
 
 ```bash
 shasum -a 256 -c SHA256SUMS.txt
-npm install -g ./alexandrbasis-roughdraft-0.1.14-basis.3.tgz
+npm install -g ./alexandrbasis-roughdraft-0.1.14-basis.4.tgz
 roughdraft --version
 ```
 

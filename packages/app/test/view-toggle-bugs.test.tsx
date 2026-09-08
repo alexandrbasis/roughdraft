@@ -908,7 +908,7 @@ describe("review handoff watcher affordance", () => {
     await click(doneReviewingButton);
 
     expect(onCompleteReview).toHaveBeenCalledOnce();
-    expect(container.textContent).toContain("Not sent");
+    expect(doneReviewingButton.textContent).toBe("Not sent, but saved");
     expect(container.textContent).not.toContain("Approve");
     expect(container.textContent).not.toContain("I'm done");
   });

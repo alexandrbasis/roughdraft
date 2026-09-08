@@ -39,19 +39,19 @@ import {
   criticMarkdownHasReviewRail,
   criticMarkdownToRenderedHtml,
 } from "./critic-markup";
-import { cn } from "./lib/utils";
 import {
   createBrowserDraftStorage,
   createDraftRecord,
+  type DraftStorage,
   DraftStorageError,
   getDraftRevision,
   getDraftTabId,
   inspectDraftRecovery,
   isDraftStorageKeyForDocument,
   pageSnapshot,
-  type DraftStorage,
   type StoredDraft,
 } from "./draft-storage";
+import { cn } from "./lib/utils";
 import {
   type DocumentInteractionMode,
   type DocumentSaveController,
@@ -59,12 +59,12 @@ import {
   PageCard,
 } from "./PageCard";
 import { RobotsHighFiveToy } from "./RobotsHighFiveToy";
-import type { CompleteReviewOptions, Page, StorageBackend } from "./storage";
 import {
   createServerDraftClient,
   type ServerDraft,
   type ServerDraftClient,
 } from "./server-draft-client";
+import type { CompleteReviewOptions, Page, StorageBackend } from "./storage";
 import { useReviewLayoutShiftAnimation } from "./useReviewLayoutShiftAnimation";
 
 type DiskChangeState = "clean" | "changed" | "conflict" | "paused";
@@ -390,11 +390,13 @@ export function getReviewHandoffButtonLabel({
     ? "Sending"
     : reviewHandoffState === "notified"
       ? "Sent"
-      : reviewHandoffState === "error" || reviewHandoffState === "undelivered"
-        ? "Not sent"
-        : documentChangedSinceOpen
-          ? "I'm done"
-          : "Approve";
+      : reviewHandoffState === "undelivered"
+        ? "Not sent, but saved"
+        : reviewHandoffState === "error"
+          ? "Not sent"
+          : documentChangedSinceOpen
+            ? "I'm done"
+            : "Approve";
 }
 
 export function shouldLatchDocumentChangedSinceOpen({
@@ -1142,11 +1144,6 @@ export function DocumentWorkspace({
   }, [activeDocumentPath, backend]);
 
   useEffect(() => {
-    if (reviewHandoffState === "undelivered" && reviewWatcherCount > 0) {
-      setReviewHandoffState("idle");
-      return;
-    }
-
     if (reviewHandoffState !== "notified") {
       sawNoWatcherAfterNotifiedRef.current = false;
       return;
@@ -1237,6 +1234,7 @@ export function DocumentWorkspace({
         } else {
           setReviewWatcherCount(0);
           setReviewHandoffState("undelivered");
+          setOverallComment("");
           setReviewHandoffPopoverOpen(true);
         }
       } catch (error) {
@@ -1353,7 +1351,11 @@ export function DocumentWorkspace({
       : conflictNoticeCopy[documentDiskChangeState];
   const showReviewHandoffButton =
     !!activeDocumentPath &&
-    (reviewWatcherCount > 0 || reviewHandoffState !== "idle");
+    (backend?.info.kind === "local-files" ||
+      reviewWatcherCount > 0 ||
+      reviewHandoffState !== "idle");
+  const reviewHandoffFinished =
+    reviewHandoffState === "notified" || reviewHandoffState === "undelivered";
   const reviewHandoffButtonLabel = getReviewHandoffButtonLabel({
     reviewHandoffState,
     documentChangedSinceOpen,
@@ -1361,20 +1363,22 @@ export function DocumentWorkspace({
   const ReviewHandoffButtonIcon =
     reviewHandoffState === "notifying"
       ? Loader2
-      : reviewHandoffState === "error" || reviewHandoffState === "undelivered"
+      : reviewHandoffState === "error"
         ? AlertTriangle
-        : null;
+        : reviewHandoffState === "undelivered"
+          ? Check
+          : null;
   const reviewHandoffStatusTitle =
     reviewHandoffState === "undelivered"
-      ? "No agent is watching now"
+      ? "Not sent, but saved"
       : reviewHandoffState === "error"
         ? "Could not notify agent"
         : reviewCompleteTitle;
   const reviewHandoffStatusBody =
     reviewHandoffState === "undelivered"
-      ? "The handoff was not delivered because the watcher is no longer connected."
+      ? "Your comments and review are saved. No agent is waiting right now. Continue the original session when you’re ready; the agent can read this document and its review history."
       : reviewHandoffState === "error"
-        ? "Roughdraft could not send the handoff. Check that the local server is still running."
+        ? "Roughdraft could not confirm the handoff. Check that the local server is running, then click Not sent to try again."
         : null;
   const reviewHandoffCopyMessage = buildReviewHandoffCopyMessage(
     activeDocumentPath ?? documentFilenameLabel,
@@ -1385,7 +1389,9 @@ export function DocumentWorkspace({
     reviewHandoffState,
   });
   const reviewHandoffButtonDisabled =
-    reviewHandoffDisabled && reviewHandoffState !== "notified";
+    reviewHandoffDisabled &&
+    !reviewHandoffFinished &&
+    !(reviewHandoffState === "error" && effectiveDiskChangeState === "clean");
   const trimmedOverallComment = overallComment.trim();
   const embedded =
     new URLSearchParams(window.location.search).get("embed") === "1";
@@ -1599,7 +1605,10 @@ export function DocumentWorkspace({
                 data-testid="review-handoff-split-button"
                 className={cn(
                   "relative flex items-center overflow-hidden rounded-[7px] shadow-[0_10px_28px_rgba(0,0,0,0.18)] transition-opacity after:pointer-events-none after:absolute after:top-px after:right-8 after:bottom-px after:z-10 after:w-px after:bg-[#4a4038] after:content-[''] dark:after:bg-slate-600",
-                  reviewHandoffDisabled && "opacity-50",
+                  reviewHandoffDisabled &&
+                    reviewHandoffState !== "undelivered" &&
+                    reviewHandoffState !== "error" &&
+                    "opacity-50",
                 )}
               >
                 <Button
@@ -1610,7 +1619,7 @@ export function DocumentWorkspace({
                   disabled={reviewHandoffButtonDisabled}
                   aria-disabled={reviewHandoffButtonDisabled || undefined}
                   onClick={() => {
-                    if (reviewHandoffState === "notified") {
+                    if (reviewHandoffFinished) {
                       setReviewHandoffPopoverOpen(true);
                       return;
                     }
@@ -1648,7 +1657,9 @@ export function DocumentWorkspace({
                 />
               </div>
               <PopoverContent
-                className={reviewHandoffState === "idle" ? undefined : "pt-0"}
+                className={
+                  reviewHandoffState === "notified" ? "pt-0" : undefined
+                }
                 aria-label={
                   reviewHandoffState === "idle"
                     ? "Review handoff comment"
@@ -1698,19 +1709,20 @@ export function DocumentWorkspace({
                   </form>
                 ) : (
                   <div>
-                    <div className="mb-3 flex h-[170px] items-center justify-center overflow-hidden">
-                      <RobotsHighFiveToy
-                        onHighFive={() =>
-                          setReviewCompleteTitle((currentTitle) =>
-                            getRandomReviewCompleteTitleExcept(currentTitle),
-                          )
-                        }
-                      />
-                    </div>
+                    {reviewHandoffState === "notified" ? (
+                      <div className="mb-3 flex h-[170px] items-center justify-center overflow-hidden">
+                        <RobotsHighFiveToy
+                          onHighFive={() =>
+                            setReviewCompleteTitle((currentTitle) =>
+                              getRandomReviewCompleteTitleExcept(currentTitle),
+                            )
+                          }
+                        />
+                      </div>
+                    ) : null}
                     <div className="flex items-start gap-3">
                       {reviewHandoffState === "notifying" ||
-                      reviewHandoffState === "error" ||
-                      reviewHandoffState === "undelivered" ? (
+                      reviewHandoffState === "error" ? (
                         <span className="mt-0.5 flex size-7 shrink-0 items-center justify-center rounded-full bg-black text-white dark:bg-white dark:text-black">
                           {reviewHandoffState === "notifying" ? (
                             <Loader2 className="size-4 animate-spin" />

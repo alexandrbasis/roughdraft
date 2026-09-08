@@ -1,4 +1,4 @@
-import { expect, test, type Route } from "@playwright/test";
+import { expect, type Route, test } from "@playwright/test";
 import {
   createMarkdownProject,
   logE2eEvent,
@@ -124,7 +124,7 @@ for (const openReviews of [2, 8]) {
   });
 }
 
-test("leaves Sending with an error when the save transport misses its deadline", async ({
+test("allows a manual retry after the save transport misses its deadline", async ({
   page,
   request,
 }) => {
@@ -164,12 +164,34 @@ test("leaves Sending with an error when the save transport misses its deadline",
       { timeout: 18_000 },
     );
     await expect(button).toHaveText("Not sent");
+    await expect(button).toBeEnabled();
     const response = await pendingWatch;
     expect((await response.json()).events).toEqual([]);
     logE2eEvent("review-handoff.save-deadline", {
       button: await button.innerText(),
       completionEvents: 0,
     });
+    // Recovery is explicit: release the failed transport only after confirming
+    // that its timed-out attempt never completed the review.
+    await heldSave?.abort().catch(() => undefined);
+    heldSave = undefined;
+    await page.unroute("**/api/markdown-file?**");
+    await page.keyboard.press("Escape");
+    const completion = page.waitForResponse(
+      (result) =>
+        result.request().method() === "POST" &&
+        new URL(result.url()).pathname === "/api/review-events",
+    );
+    await button.click();
+    const retried = await completion;
+    expect(retried.status()).toBe(201);
+    expect(await retried.json()).toMatchObject({ delivered: false });
+    await expect(button).toHaveText("Not sent, but saved");
+    const history = await request.get("/api/reviews/history", {
+      params: { documentPath: filePath },
+    });
+    expect((await history.json()).rounds).toHaveLength(1);
+    logE2eEvent("review-handoff.manual-retry-saved", { completedRounds: 1 });
   } finally {
     await heldSave?.abort().catch(() => undefined);
     await page.close();

@@ -9,12 +9,12 @@ license and stores comments and suggestions in the Markdown file.
 Use Node.js 22.13 or newer. Install the built package from this fork's GitHub release:
 
 ```bash
-npm install -g https://github.com/alexandrbasis/roughdraft/releases/download/v0.1.14-basis.3/alexandrbasis-roughdraft-0.1.14-basis.3.tgz
+npm install -g https://github.com/alexandrbasis/roughdraft/releases/download/v0.1.14-basis.4/alexandrbasis-roughdraft-0.1.14-basis.4.tgz
 roughdraft --version
 roughdraft open /absolute/path/to/file.md
 ```
 
-The version should be `0.1.14-basis.3`. The package is named
+The version should be `0.1.14-basis.4`. The package is named
 `@alexandrbasis/roughdraft`; the executable remains `roughdraft`. Installing it
 globally shares the executable name with the original package.
 The unscoped npm package `roughdraft` installs the original upstream version.
@@ -124,7 +124,7 @@ Agents can watch that handoff directly:
 roughdraft open ./path/to/my-essay/draft.md --json
 ```
 
-`roughdraft open` starts or reuses the local server, opens the document, registers a fresh watcher, blocks until the next `review.completed` event, then prints event JSON with the document path, file version, feedback counts, and any optional `overallComment` you submit at handoff. By default there is no watch timeout; pass `--timeout <seconds>` when you want one. Use `--no-watch` when you only want to open the document and return immediately. If no watcher is active when you click **Done Reviewing**, Roughdraft shows a fallback prompt you can copy into the agent. Overall comments are written to Markdown as document-level YAML endmatter comments before the handoff event is emitted, so Markdown remains the durable source of truth.
+`roughdraft open` starts or reuses the local server, opens the document, registers a fresh watcher, blocks until the next `review.completed` event, then prints event JSON with the document path, file version, feedback counts, and any optional `overallComment` you submit at handoff. By default there is no watch timeout; pass `--timeout <seconds>` when you want one. Use `--no-watch` when you only want to open the document and return immediately. You can finish a local review after its waiting agent session has ended. Comments stay in Markdown and completion stays in review history. With no active watcher, Roughdraft shows **Not sent, but saved** as a completed result. Resume the original agent session when convenient and have it read the document or history. Completion makes one automatic delivery attempt; an absent watcher does not trigger retries. A transport or save failure remains an error with an explicit manual retry. Overall comments are written to Markdown as document-level YAML endmatter comments before the handoff event is emitted, so Markdown remains the durable source of truth.
 
 Experimental MCP clients can start the stdio server with:
 
