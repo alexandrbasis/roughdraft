@@ -1,5 +1,10 @@
+import { createServer as createHttpServer, type Server } from "node:http";
+import type { AddressInfo } from "node:net";
+import fs from "node:fs";
+import os from "node:os";
 import path from "node:path";
 import { describe, expect, it, vi } from "vitest";
+import { createApp } from "./index";
 import { ReviewEventQueue } from "./review-events";
 
 function eventInput(documentPath = "/tmp/project/draft.md") {
@@ -182,5 +187,115 @@ describe("ReviewEventQueue", () => {
     expect(result.events).toHaveLength(100);
     expect(result.events[0]?.sequence).toBe(6);
     expect(result.events.at(-1)?.sequence).toBe(105);
+  });
+
+  it("honors an explicit queue timeout beyond the old five-minute clamp", async () => {
+    vi.useFakeTimers();
+    const queue = new ReviewEventQueue();
+    const waiting = queue.wait({ timeoutMs: 300_001 });
+
+    await vi.advanceTimersByTimeAsync(300_000);
+    expect(queue.waiterCount()).toBe(1);
+    await vi.advanceTimersByTimeAsync(1);
+
+    await expect(waiting).resolves.toMatchObject({
+      timedOut: true,
+      events: [],
+    });
+    vi.useRealTimers();
+  });
+
+  it("delivers an event emitted between network polls when the cursor uses the previous sequence", async () => {
+    const tempDir = fs.mkdtempSync(
+      path.join(os.tmpdir(), "roughdraft-watch-network-"),
+    );
+    const projectDir = path.join(tempDir, "project");
+    const homeDir = path.join(tempDir, "home");
+    fs.mkdirSync(projectDir, { recursive: true });
+    fs.mkdirSync(homeDir, { recursive: true });
+    fs.writeFileSync(path.join(projectDir, "draft.md"), "# Draft\n");
+    fs.writeFileSync(path.join(projectDir, "other.md"), "# Other\n");
+
+    const { app } = createApp({
+      homeDir,
+      projectDir,
+      staticDirPath: projectDir,
+    });
+    const server: Server = createHttpServer(app);
+
+    try {
+      const port = await new Promise<number>((resolve, reject) => {
+        server.once("error", reject);
+        server.listen(0, "127.0.0.1", () => {
+          const address = server.address() as AddressInfo;
+          resolve(address.port);
+        });
+      });
+      const baseUrl = `http://127.0.0.1:${port}`;
+      const request = (pathname: string, body: Record<string, unknown>) =>
+        fetch(`${baseUrl}${pathname}`, {
+          method: "POST",
+          headers: { "Content-Type": "application/json" },
+          body: JSON.stringify(body),
+        });
+
+      await request("/api/review-events", {
+        projectPath: projectDir,
+        path: "other.md",
+      });
+      const firstResponse = await request("/api/review-events/watch", {
+        projectPath: projectDir,
+        path: "draft.md",
+        fromNow: true,
+        timeoutSeconds: 0.01,
+        batchWindowSeconds: 0,
+      });
+      const first = (await firstResponse.json()) as {
+        nextSequence: number;
+        timedOut: boolean;
+      };
+
+      expect(first).toEqual({
+        events: [],
+        nextSequence: 2,
+        timedOut: true,
+      });
+
+      const emittedResponse = await request("/api/review-events", {
+        projectPath: projectDir,
+        path: "draft.md",
+      });
+      expect(emittedResponse.status).toBe(201);
+
+      const secondResponse = await request("/api/review-events/watch", {
+        projectPath: projectDir,
+        path: "draft.md",
+        fromNow: false,
+        afterSequence: first.nextSequence - 1,
+        timeoutSeconds: 0.1,
+        batchWindowSeconds: 0,
+      });
+      const second = (await secondResponse.json()) as {
+        events: Array<{ documentPath: string; sequence: number }>;
+        timedOut: boolean;
+      };
+
+      expect(second).toMatchObject({
+        timedOut: false,
+        events: [
+          {
+            documentPath: path.join(projectDir, "draft.md"),
+            sequence: 2,
+          },
+        ],
+      });
+    } finally {
+      if (server.listening) {
+        await new Promise<void>((resolve, reject) => {
+          server.close((error) => (error ? reject(error) : resolve()));
+        });
+      }
+      fs.rmSync(tempDir, { recursive: true, force: true });
+    }
   });
 });

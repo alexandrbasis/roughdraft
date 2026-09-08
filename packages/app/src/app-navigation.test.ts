@@ -71,6 +71,24 @@ describe("app navigation", () => {
     ).toBe("/?path=%2FUsers%2Fme%2Fproject%2F.context%2Flocal-link-target.md");
   });
 
+  it("preserves embed mode when following a linked markdown document", () => {
+    window.history.replaceState(
+      null,
+      "",
+      "/?path=%2FUsers%2Fme%2Fproject%2F.context%2Flocal-link-source.md&embed=1",
+    );
+
+    expect(
+      buildLocationForLinkedMarkdownDocument({
+        projectPath: "/Users/me/project/.context",
+        currentDocumentPath: "local-link-source.md",
+        href: "local-link-target.md",
+      }),
+    ).toBe(
+      "/?path=%2FUsers%2Fme%2Fproject%2F.context%2Flocal-link-target.md&embed=1",
+    );
+  });
+
   it("resolves nested markdown links relative to the current document", () => {
     window.history.replaceState(null, "", "/");
 

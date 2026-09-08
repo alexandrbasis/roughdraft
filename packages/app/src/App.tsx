@@ -92,7 +92,7 @@ export function shouldWarnBeforeUnload({
 }
 
 const AGENT_SETUP_PROMPT =
-  "Install Roughdraft for me using `npm i -g roughdraft`, then read https://roughdraft.md/setup.md and set yourself up to use it.";
+  "Install the Basis fork of Roughdraft using `npm install -g https://github.com/alexandrbasis/roughdraft/releases/download/v0.1.11-basis.1/alexandrbasis-roughdraft-0.1.11-basis.1.tgz`, then read `roughdraft help agent` and set yourself up to use it.";
 const PREVIEW_DOCUMENT_PATH = "preview.md";
 const PREVIEW_INITIAL_MARKDOWN = [
   "# Live Preview",
@@ -480,7 +480,7 @@ export function Homepage({
                   variant="ghost"
                   render={
                     <a
-                      href="https://github.com/Lex-Inc/roughdraft"
+                      href="https://github.com/alexandrbasis/roughdraft"
                       target="_blank"
                       rel="noreferrer"
                     >
@@ -1559,6 +1559,9 @@ export function App() {
         if (typeof payload.url !== "string" || !payload.url.trim()) return;
 
         const nextUrl = new URL(payload.url, window.location.origin);
+        if (new URLSearchParams(window.location.search).get("embed") === "1") {
+          nextUrl.searchParams.set("embed", "1");
+        }
         window.focus();
         if (nextUrl.href !== window.location.href) {
           window.location.assign(nextUrl.href);

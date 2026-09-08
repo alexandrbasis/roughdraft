@@ -1877,7 +1877,7 @@ const RichTextEditorSurface = memo(function RichTextEditorSurface({
     .map((commentId) => comments.get(commentId))
     .filter((comment): comment is CriticComment => Boolean(comment));
   const contentCardClass =
-    "rounded-[0.75rem] border border-[#E9E9E8] dark:border-slate-800 bg-white dark:bg-card shadow-[0_18px_44px_rgba(57,47,38,0.08)] dark:shadow-[0_18px_44px_rgba(0,0,0,0.35)]";
+    "document-content-card rounded-[0.75rem] border border-[#E9E9E8] dark:border-slate-800 bg-white dark:bg-card shadow-[0_18px_44px_rgba(57,47,38,0.08)] dark:shadow-[0_18px_44px_rgba(0,0,0,0.35)]";
   const documentShellClass = cn(
     "document-page-shell",
     layout === "embedded-demo"
@@ -1894,7 +1894,10 @@ const RichTextEditorSurface = memo(function RichTextEditorSurface({
       ? "max-w-none"
       : "review-layout-main max-w-[46.5rem]",
   );
-  const contentInsetClass = layout === "embedded-demo" ? "pb-0" : "pb-24";
+  const contentInsetClass = cn(
+    "document-content-inset",
+    layout === "embedded-demo" ? "pb-0" : "pb-24",
+  );
   const fallbackClass = cn(
     "document-comment-fallback mb-4",
     layout === "embedded-demo" ? "hidden" : "min-[1100px]:hidden",
@@ -2052,7 +2055,10 @@ const CodeEditorSurface = memo(function CodeEditorSurface({
       ? "max-w-none"
       : "review-layout-main max-w-[46.5rem]",
   );
-  const contentInsetClass = layout === "embedded-demo" ? "pb-0" : "pb-24";
+  const contentInsetClass = cn(
+    "document-content-inset",
+    layout === "embedded-demo" ? "pb-0" : "pb-24",
+  );
   const reviewRailClass = cn(
     "document-comment-rail pointer-events-none invisible",
     layout === "embedded-demo"
@@ -2072,7 +2078,7 @@ const CodeEditorSurface = memo(function CodeEditorSurface({
         <div className={documentMainClass}>
           <div className={contentInsetClass}>
             <div
-              className="min-h-[calc(70vh+4rem)] rounded-[0.75rem] border border-[#E9E9E8] dark:border-slate-800 bg-white dark:bg-card py-10 pr-6 pl-5 shadow-[0_18px_44px_rgba(57,47,38,0.08)] dark:shadow-[0_18px_44px_rgba(0,0,0,0.35)] sm:py-14 sm:pr-10 sm:pl-8"
+              className="document-content-card min-h-[calc(70vh+4rem)] rounded-[0.75rem] border border-[#E9E9E8] dark:border-slate-800 bg-white dark:bg-card py-10 pr-6 pl-5 shadow-[0_18px_44px_rgba(57,47,38,0.08)] dark:shadow-[0_18px_44px_rgba(0,0,0,0.35)] sm:py-14 sm:pr-10 sm:pl-8"
               data-testid="document-content-card"
             >
               <MarkdownCodeEditor

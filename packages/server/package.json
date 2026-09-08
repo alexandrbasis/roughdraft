@@ -4,7 +4,7 @@
   "private": true,
   "type": "module",
   "scripts": {
-    "build": "pnpm --filter @roughdraft/rfm build && tsc",
+    "build": "pnpm --filter @roughdraft/rfm build && tsc --emitDeclarationOnly && node ../../scripts/build-server.mjs",
     "dev": "tsx watch src/dev.ts",
     "test": "vitest run"
   },

@@ -1055,7 +1055,182 @@ function addCriticCommentRule(
   });
 }
 
-function addCriticCodeBlockRule(service: TurndownService) {
+function serializeCriticCodeChildren(
+  parent: ParentNode,
+  comments: Map<string, CriticComment>,
+  useEndmatter: boolean,
+): string {
+  const childNodes = [...parent.childNodes];
+  let result = "";
+
+  for (let index = 0; index < childNodes.length; index += 1) {
+    const child = childNodes[index];
+    const previousChild = childNodes[index - 1];
+
+    if (
+      child instanceof HTMLElement &&
+      previousChild instanceof HTMLElement &&
+      isPairedSubstitutionElement(
+        previousChild,
+        "substitution-old",
+        child.getAttribute("data-critic-change-id") ?? "",
+      ) &&
+      child.getAttribute("data-critic-change-kind") === "substitution-new"
+    ) {
+      continue;
+    }
+
+    result += serializeCriticCodeNode(child, comments, useEndmatter);
+  }
+
+  return result;
+}
+
+function serializeCriticCodeNode(
+  node: ChildNode,
+  comments: Map<string, CriticComment>,
+  useEndmatter: boolean,
+): string {
+  if (node.nodeType === Node.TEXT_NODE) {
+    return node.textContent ?? "";
+  }
+
+  if (!(node instanceof HTMLElement)) {
+    return node.textContent ?? "";
+  }
+
+  if (node.hasAttribute("data-comment-ids")) {
+    const commentIds = getElementCommentIds(node);
+    const criticChangeElement = [...node.children].find((child) =>
+      child.hasAttribute("data-critic-change-kind"),
+    );
+
+    if (criticChangeElement instanceof HTMLElement) {
+      return serializeCriticCodeChangeElement(
+        criticChangeElement,
+        serializeCriticCodeChildren(
+          criticChangeElement,
+          comments,
+          useEndmatter,
+        ),
+        comments,
+        commentIds,
+        useEndmatter,
+      );
+    }
+
+    const content = serializeCriticCodeChildren(node, comments, useEndmatter);
+    const commentBlocks = serializeCommentBlocks(
+      commentIds,
+      comments,
+      useEndmatter,
+    );
+
+    return commentBlocks ? `{==${content}==}${commentBlocks}` : content;
+  }
+
+  if (node.hasAttribute("data-critic-change-kind")) {
+    return serializeCriticCodeChangeElement(
+      node,
+      serializeCriticCodeChildren(node, comments, useEndmatter),
+      comments,
+      [],
+      useEndmatter,
+    );
+  }
+
+  return serializeCriticCodeChildren(node, comments, useEndmatter);
+}
+
+function serializeCriticCodeChangeElement(
+  element: HTMLElement,
+  content: string,
+  comments: Map<string, CriticComment>,
+  extraCommentIds: string[] = [],
+  useEndmatter = false,
+): string {
+  const change = getElementChangeAttrs(element);
+
+  if (!change) return content;
+
+  const commentBlocks = getChangeCommentBlocks(
+    element,
+    comments,
+    extraCommentIds,
+    useEndmatter,
+  );
+  const metadata = useEndmatter
+    ? `{#${change.changeId}}`
+    : serializeChangeMetadata(change);
+
+  if (change.kind === "addition") {
+    return `{++${content}++}${metadata}${commentBlocks}`;
+  }
+
+  if (change.kind === "deletion") {
+    return `{--${content}--}${metadata}${commentBlocks}`;
+  }
+
+  if (change.kind === "substitution-new") {
+    return isPairedSubstitutionElement(
+      element.previousElementSibling,
+      "substitution-old",
+      change.changeId,
+    )
+      ? ""
+      : `{++${content}++}${
+          useEndmatter
+            ? `{#${change.changeId}}`
+            : serializeChangeMetadata({
+                ...change,
+                kind: "addition",
+              })
+        }${commentBlocks}`;
+  }
+
+  const nextElement = element.nextElementSibling;
+
+  if (
+    nextElement instanceof HTMLElement &&
+    isPairedSubstitutionElement(
+      nextElement,
+      "substitution-new",
+      change.changeId,
+    )
+  ) {
+    const replacement = serializeCriticCodeChildren(
+      nextElement,
+      comments,
+      useEndmatter,
+    );
+    return `{~~${content}~>${replacement}~~}${metadata}${commentBlocks}`;
+  }
+
+  return `{--${content}--}${
+    useEndmatter
+      ? `{#${change.changeId}}`
+      : serializeChangeMetadata({
+          ...change,
+          kind: "deletion",
+        })
+  }${commentBlocks}`;
+}
+
+function getSafeCodeFence(content: string): string {
+  let longestBacktickRun = 0;
+
+  for (const match of content.matchAll(/`+/g)) {
+    longestBacktickRun = Math.max(longestBacktickRun, match[0].length);
+  }
+
+  return "`".repeat(Math.max(3, longestBacktickRun + 1));
+}
+
+function addCriticCodeBlockRule(
+  service: TurndownService,
+  comments: Map<string, CriticComment>,
+  useEndmatter = false,
+) {
   service.addRule("criticCodeBlock", {
     filter: (node) => {
       if (node.nodeName !== "PRE") return false;
@@ -1079,9 +1254,14 @@ function addCriticCodeBlockRule(service: TurndownService) {
         [...codeElement.classList]
           .find((className) => className.startsWith("language-"))
           ?.slice("language-".length) ?? "";
-      const content = service.turndown(codeElement.innerHTML).trimEnd();
+      const content = serializeCriticCodeChildren(
+        codeElement,
+        comments,
+        useEndmatter,
+      );
+      const fence = getSafeCodeFence(content);
 
-      return `\n\n\`\`\`${language}\n${content}\n\`\`\`\n\n`;
+      return `\n\n${fence}${language}\n${content}\n${fence}\n\n`;
     },
   });
 }
@@ -1505,7 +1685,7 @@ export function editorStateToCriticMarkdown(
   const useEndmatter = Boolean(sourceEndmatter);
   addCriticCommentRule(service, comments, useEndmatter);
   addCriticChangeRule(service, comments, useEndmatter);
-  addCriticCodeBlockRule(service);
+  addCriticCodeBlockRule(service, comments, useEndmatter);
   const endmatter = serializeReviewEndmatter(
     sourceEndmatter,
     comments,

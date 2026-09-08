@@ -400,6 +400,24 @@ export function createTurndownService(): TurndownService {
   service.addRule("compactListItem", {
     filter: "li",
     replacement(content, node, options) {
+      if (node.getAttribute("data-type") === "taskItem") {
+        const contentElement = [...node.children].find(
+          (child) => child.nodeName === "DIV",
+        );
+        const labelElement = [...node.children].find(
+          (child) => child.nodeName === "LABEL",
+        );
+        const checkbox = labelElement?.querySelector('input[type="checkbox"]');
+        const checked =
+          node.getAttribute("data-checked") === "true" ||
+          checkbox?.hasAttribute("checked");
+        const taskContent = contentElement
+          ? service.turndown(contentElement.innerHTML).trim()
+          : content.trim();
+
+        return `${options.bulletListMarker} [${checked ? "x" : " "}] ${taskContent.replace(/\n/gm, "\n  ")}${node.nextSibling ? "\n" : ""}`;
+      }
+
       const trimmed = content
         .replace(/^\n+/, "")
         .replace(/\n+$/, "\n")
@@ -529,20 +547,88 @@ export function createTurndownService(): TurndownService {
 
 const turndown = createTurndownService();
 
-/**
- * Collapse runs of 3+ newlines to 2 and remove the blank line that
- * Turndown inserts before/after ATX headings.  This keeps block
- * separation where it matters (between consecutive paragraphs) while
- * producing a more compact output that round-trips with fewer
- * gratuitous whitespace changes.
- */
-export function normalizeBlockSpacing(md: string): string {
+function normalizeUnfencedBlockSpacing(md: string): string {
   let normalized = md.replace(/\n{3,}/g, "\n\n");
   // Remove blank line immediately before a heading.
   normalized = normalized.replace(/\n\n(#{1,6} )/g, "\n$1");
   // Remove blank line immediately after a heading line.
   normalized = normalized.replace(/(^#{1,6} [^\n]+)\n\n/gm, "$1\n");
   return normalized;
+}
+
+interface FenceLine {
+  prefix: string;
+  marker: string;
+}
+
+function matchFenceLine(line: string): FenceLine | null {
+  const match = line.match(
+    /^((?:(?:[ \t]{0,3}>[ \t]?)+[ \t]{0,3}|[ \t]{0,3}))(`{3,}|~{3,})/,
+  );
+
+  if (!match) return null;
+
+  return {
+    prefix: match[1] ?? "",
+    marker: match[2] ?? "",
+  };
+}
+
+/**
+ * Collapse runs of 3+ newlines to 2 and remove the blank line that
+ * Turndown inserts before/after ATX headings, without changing fenced code.
+ */
+export function normalizeBlockSpacing(md: string): string {
+  let output = "";
+  let outsideStart = 0;
+  let lineStart = 0;
+  let fenceStart = -1;
+  let fencePrefix = "";
+  let fenceChar = "";
+  let fenceLength = 0;
+
+  while (lineStart < md.length) {
+    const newlineIndex = md.indexOf("\n", lineStart);
+    const lineEnd = newlineIndex === -1 ? md.length : newlineIndex + 1;
+    const line = md.slice(lineStart, lineEnd).replace(/\r?\n$/, "");
+    const fenceLine = matchFenceLine(line);
+
+    if (fenceStart < 0) {
+      if (fenceLine) {
+        output += normalizeUnfencedBlockSpacing(
+          md.slice(outsideStart, lineStart),
+        );
+        fenceStart = lineStart;
+        fencePrefix = fenceLine.prefix;
+        fenceChar = fenceLine.marker[0] ?? "";
+        fenceLength = fenceLine.marker.length;
+      }
+    } else if (
+      fenceLine &&
+      fenceLine.prefix === fencePrefix &&
+      fenceLine.marker[0] === fenceChar &&
+      fenceLine.marker.length >= fenceLength &&
+      /^[ \t]*$/.test(
+        line.slice(fenceLine.prefix.length + fenceLine.marker.length),
+      )
+    ) {
+      output += md.slice(fenceStart, lineEnd);
+      outsideStart = lineEnd;
+      fenceStart = -1;
+      fencePrefix = "";
+      fenceChar = "";
+      fenceLength = 0;
+    }
+
+    lineStart = lineEnd;
+  }
+
+  if (fenceStart >= 0) {
+    output += md.slice(fenceStart);
+    return output;
+  }
+
+  return output + normalizeUnfencedBlockSpacing(md.slice(outsideStart));
 }
 
 export function toMarkdown(html: string): string {

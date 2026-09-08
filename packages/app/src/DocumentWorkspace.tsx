@@ -709,9 +709,13 @@ export function DocumentWorkspace({
   const reviewHandoffButtonDisabled =
     reviewHandoffDisabled && reviewHandoffState !== "notified";
   const trimmedOverallComment = overallComment.trim();
+  const embedded =
+    new URLSearchParams(window.location.search).get("embed") === "1";
 
   return (
     <div
+      data-testid="document-workspace"
+      data-document-embed={embedded ? "true" : undefined}
       className={cn(
         "min-h-0 flex-1 overflow-y-auto px-8 pb-8 sm:px-12",
         conflictNotice ? "pt-40 sm:pt-28" : "pt-10",
@@ -982,7 +986,7 @@ export function DocumentWorkspace({
             ref={documentHeaderRef}
             data-testid="document-page-header"
             className={cn(
-              "review-layout-grid document-page-shell mb-2 text-[0.62rem] font-medium tracking-[0.01em] text-stone-400",
+              "review-layout-grid document-page-shell document-page-header mb-2 text-[0.62rem] font-medium tracking-[0.01em] text-stone-400",
               !documentHasComments &&
                 "review-layout-grid--centered document-page-shell-no-comments",
             )}

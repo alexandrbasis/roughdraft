@@ -31,7 +31,15 @@ http://127.0.0.1:5173/roughdraft-flavored-markdown
 http://127.0.0.1:5173/preview
 http://127.0.0.1:5173/preview?editor=code
 http://127.0.0.1:5173/preview?editor=rich-text
+http://127.0.0.1:5173/preview?embed=1
 ```
+
+For an embedded workspace panel, append `&embed=1` to a document URL, or use
+`/preview?embed=1`. Capture rich text and code modes at 380px and 720px, including
+light and dark themes. The document fills the panel without outer paper borders
+or shadows. Text keeps its internal padding, and the file menu, mode selector,
+save status, and review handoff remain reachable. Also capture a desktop review
+with the comment rail visible. Omitting `embed=1` keeps the normal page layout.
 
 For local file backend states, use the worktree-specific CLI wrapper:
 

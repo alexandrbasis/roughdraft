@@ -2,6 +2,7 @@ import {
   buildCommentThreads,
   type CriticComment,
   flattenCommentThreads,
+  getCommentDescendantIds,
 } from "./critic-markup";
 
 interface CommentAnchorMeasurement {
@@ -199,7 +200,18 @@ export function buildCommentThreadRailItems(
   const items: CommentThreadRailItem[] = [];
 
   for (const group of groups) {
-    const visibleComments = group.commentIds
+    const visibleCommentIds = new Set(group.commentIds);
+
+    for (const commentId of group.commentIds) {
+      const comment = comments.get(commentId);
+      if (!comment || comment.parentCommentId) continue;
+
+      for (const descendantId of getCommentDescendantIds(commentId, comments)) {
+        visibleCommentIds.add(descendantId);
+      }
+    }
+
+    const visibleComments = [...visibleCommentIds]
       .map((commentId) => comments.get(commentId))
       .filter((comment): comment is CriticComment => Boolean(comment));
 

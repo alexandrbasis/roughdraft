@@ -1021,6 +1021,187 @@ describe("cli", () => {
     });
   });
 
+  it("re-polls after a bounded wait and resumes from the latest event sequence", async () => {
+    const test = createTestDependencies();
+    const documentPath = path.join(projectDir, "draft.md");
+    fs.writeFileSync(documentPath, "# Draft\n");
+    const watchRequestBodies: Array<Record<string, unknown>> = [];
+    const stateFilePath = getServerStateFilePath(test.deps.env);
+    fs.mkdirSync(path.dirname(stateFilePath), { recursive: true });
+    fs.writeFileSync(
+      stateFilePath,
+      JSON.stringify({
+        port: 7373,
+        pid: 4242,
+        startedAt: new Date().toISOString(),
+        url: "http://localhost:7373",
+      }),
+    );
+    runningPids.add(4242);
+    let watchResponseCount = 0;
+    const deps = {
+      ...test.deps,
+      fetchImpl: async (input: Parameters<typeof fetch>[0], init) => {
+        const url =
+          input instanceof URL
+            ? input
+            : new URL(
+                typeof input === "string" ? input : input.url,
+                "http://localhost",
+              );
+        if (url.pathname === "/api/status") {
+          return new Response(
+            JSON.stringify({
+              backend: "local-files",
+              port: 7373,
+              serverRoot,
+            }),
+            { status: 200, headers: { "Content-Type": "application/json" } },
+          );
+        }
+        if (
+          url.pathname === "/api/review-events/watch" &&
+          typeof init?.body === "string"
+        ) {
+          watchResponseCount += 1;
+          watchRequestBodies.push(
+            JSON.parse(init.body) as Record<string, unknown>,
+          );
+          if (watchResponseCount === 1) {
+            return new Response(
+              JSON.stringify({ events: [], timedOut: true, nextSequence: 1 }),
+              { status: 200, headers: { "Content-Type": "application/json" } },
+            );
+          }
+          if (watchResponseCount === 2) {
+            return new Response(
+              JSON.stringify({ events: [], timedOut: true, nextSequence: 2 }),
+              { status: 200, headers: { "Content-Type": "application/json" } },
+            );
+          }
+          return new Response(
+            JSON.stringify({
+              events: [{ documentPath, type: "review.completed" }],
+              timedOut: false,
+              nextSequence: 3,
+            }),
+            { status: 200, headers: { "Content-Type": "application/json" } },
+          );
+        }
+        return test.deps.fetchImpl(input, init);
+      },
+    };
+
+    const exitCode = await runCli(["watch", documentPath, "--json"], deps);
+
+    expect(exitCode).toBe(0);
+    expect(watchRequestBodies).toHaveLength(3);
+    expect(watchRequestBodies[0]).toMatchObject({
+      fromNow: true,
+      timeoutSeconds: 0,
+    });
+    expect(watchRequestBodies[1]).toMatchObject({
+      fromNow: false,
+      timeoutSeconds: 240,
+    });
+    expect(watchRequestBodies[2]).toMatchObject({
+      afterSequence: 1,
+      fromNow: false,
+      timeoutSeconds: 240,
+    });
+  });
+
+  it("reconnects after an idle transport timeout during an unbounded watch", async () => {
+    const test = createTestDependencies();
+    const documentPath = path.join(projectDir, "draft.md");
+    fs.writeFileSync(documentPath, "# Draft\n");
+    const stateFilePath = getServerStateFilePath(test.deps.env);
+    fs.mkdirSync(path.dirname(stateFilePath), { recursive: true });
+    fs.writeFileSync(
+      stateFilePath,
+      JSON.stringify({
+        port: 7373,
+        pid: 4242,
+        startedAt: new Date().toISOString(),
+        url: "http://localhost:7373",
+      }),
+    );
+    runningPids.add(4242);
+    const watchRequestBodies: Array<Record<string, unknown>> = [];
+    let watchResponseCount = 0;
+    const deps = {
+      ...test.deps,
+      fetchImpl: async (input: Parameters<typeof fetch>[0], init) => {
+        const url =
+          input instanceof URL
+            ? input
+            : new URL(
+                typeof input === "string" ? input : input.url,
+                "http://localhost",
+              );
+        if (url.pathname === "/api/status") {
+          return new Response(
+            JSON.stringify({
+              backend: "local-files",
+              port: 7373,
+              serverRoot,
+            }),
+            { status: 200, headers: { "Content-Type": "application/json" } },
+          );
+        }
+        if (url.pathname === "/api/review-events/watch") {
+          watchResponseCount += 1;
+          if (typeof init?.body === "string") {
+            watchRequestBodies.push(
+              JSON.parse(init.body) as Record<string, unknown>,
+            );
+          }
+          if (watchResponseCount === 1) {
+            return new Response(
+              JSON.stringify({ events: [], timedOut: true, nextSequence: 1 }),
+              { status: 200, headers: { "Content-Type": "application/json" } },
+            );
+          }
+          if (watchResponseCount === 2) {
+            const error = new TypeError("fetch failed") as TypeError & {
+              cause?: { code?: string; message?: string };
+            };
+            error.cause = {
+              code: "UND_ERR_HEADERS_TIMEOUT",
+              message: "Headers Timeout Error",
+            };
+            throw error;
+          }
+          return new Response(
+            JSON.stringify({
+              events: [{ documentPath, type: "review.completed" }],
+              timedOut: false,
+              nextSequence: 2,
+            }),
+            { status: 200, headers: { "Content-Type": "application/json" } },
+          );
+        }
+        return test.deps.fetchImpl(input, init);
+      },
+    };
+
+    const exitCode = await runCli(["watch", documentPath, "--json"], deps);
+
+    expect(exitCode).toBe(0);
+    expect(watchResponseCount).toBe(3);
+    expect(watchRequestBodies).toHaveLength(3);
+    expect(watchRequestBodies[1]).toMatchObject({
+      afterSequence: 0,
+      fromNow: false,
+      timeoutSeconds: 240,
+    });
+    expect(watchRequestBodies[2]).toMatchObject({
+      afterSequence: 0,
+      fromNow: false,
+      timeoutSeconds: 240,
+    });
+  });
+
   it("opens a document and waits for the next review event by default from open --json", async () => {
     const test = createTestDependencies();
     const documentPath = path.join(projectDir, "draft.md");
@@ -1070,14 +1251,14 @@ describe("cli", () => {
     }
 
     expect(persisted).not.toBeNull();
-    for (let attempt = 0; attempt < 20; attempt += 1) {
-      if (watchRequestBody) break;
-      await new Promise((resolve) => setTimeout(resolve, 10));
-    }
-    expect(watchRequestBody).toMatchObject({
-      batchWindowSeconds: 0,
-    });
-    expect(watchRequestBody).not.toHaveProperty("timeoutSeconds");
+    await expect
+      .poll(() => watchRequestBody)
+      .toMatchObject({
+        batchWindowSeconds: 0,
+        fromNow: false,
+        timeoutSeconds: 240,
+      });
+    expect(watchRequestBody).toHaveProperty("afterSequence", 0);
     await fetch(`http://localhost:${persisted?.port}/api/review-events`, {
       method: "POST",
       headers: { "Content-Type": "application/json" },
@@ -1411,7 +1592,9 @@ describe("cli", () => {
     expect(test.logs).toContain(
       "  help agent         Print the agent setup prompt",
     );
-    expect(test.logs).toContain("Agent setup: https://roughdraft.md/setup.md");
+    expect(test.logs).toContain(
+      "Agent setup: https://github.com/alexandrbasis/roughdraft#agent-setup",
+    );
     expect(test.logs).toContain(
       "Use `roughdraft help agent` for a copyable setup prompt.",
     );
@@ -1427,7 +1610,7 @@ describe("cli", () => {
       "To set up your coding agent, paste this into it:",
     );
     expect(test.logs).toContain(
-      "Install Roughdraft for me using `npm i -g roughdraft`, then read https://roughdraft.md/setup.md and set yourself up to use it.",
+      "Install the Basis fork of Roughdraft using `npm install -g https://github.com/alexandrbasis/roughdraft/releases/download/v0.1.11-basis.1/alexandrbasis-roughdraft-0.1.11-basis.1.tgz`, then read `roughdraft help agent` and set yourself up to use it.",
     );
     expect(test.logs).toContain(
       "This command only prints setup text. It does not edit agent instruction files.",
@@ -1508,7 +1691,7 @@ describe("cli", () => {
 
     expect(exitCode).toBe(0);
     expect(test.logs).toContain(
-      "Live setup instructions: https://roughdraft.md/setup.md",
+      "Live setup instructions: https://github.com/alexandrbasis/roughdraft#agent-setup",
     );
   });
 
