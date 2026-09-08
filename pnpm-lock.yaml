@@ -48,6 +48,9 @@ importers:
       '@codemirror/lang-yaml':
         specifier: ^6.1.3
         version: 6.1.3
+      '@codemirror/language':
+        specifier: 6.12.3
+        version: 6.12.3
       '@codemirror/state':
         specifier: ^6.6.0
         version: 6.6.0
@@ -60,6 +63,9 @@ importers:
       '@joplin/turndown-plugin-gfm':
         specifier: ^1.0.64
         version: 1.0.64
+      '@lezer/highlight':
+        specifier: 1.2.3
+        version: 1.2.3
       '@tiptap/core':
         specifier: ^3.22.4
         version: 3.22.4(@tiptap/pm@3.22.4)

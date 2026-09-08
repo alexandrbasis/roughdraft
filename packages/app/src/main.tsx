@@ -2,18 +2,11 @@ import { StrictMode } from "react";
 import { createRoot } from "react-dom/client";
 import { TooltipProvider } from "@/components/ui/tooltip";
 import { App } from "./App";
+import { ThemeSwitcher } from "./ThemeSwitcher";
+import { initializeTheme } from "./theme";
 import "./style.css";
 
-const darkQuery = window.matchMedia("(prefers-color-scheme: dark)");
-
-function applyColorScheme(dark: boolean) {
-  document.documentElement.classList.toggle("dark", dark);
-}
-
-applyColorScheme(darkQuery.matches);
-darkQuery.addEventListener("change", (event) => {
-  applyColorScheme(event.matches);
-});
+initializeTheme();
 
 const rootElement = document.getElementById("root");
 
@@ -25,6 +18,7 @@ createRoot(rootElement).render(
   <StrictMode>
     <TooltipProvider>
       <App />
+      <ThemeSwitcher />
     </TooltipProvider>
   </StrictMode>,
 );

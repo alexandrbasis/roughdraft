@@ -684,6 +684,11 @@
 }
 
 :root {
+  --syntax-muted: var(--color-slate-600);
+  --syntax-link: var(--color-blue-700);
+  --syntax-keyword: var(--color-violet-700);
+  --syntax-literal: var(--color-emerald-700);
+  --syntax-invalid: var(--color-red-700);
   --background: #fcfcfc;
   --foreground: oklch(0.141 0.006 67.1);
   --card: oklch(1 0 0);
@@ -722,6 +727,11 @@
 }
 
 .dark {
+  --syntax-muted: var(--color-slate-400);
+  --syntax-link: var(--color-blue-300);
+  --syntax-keyword: var(--color-violet-300);
+  --syntax-literal: var(--color-emerald-300);
+  --syntax-invalid: var(--color-red-300);
   --background: oklch(0.141 0.006 67.1);
   --foreground: oklch(0.985 0 0);
   --card: oklch(0.21 0.025 257);
