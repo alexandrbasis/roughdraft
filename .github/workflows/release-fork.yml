@@ -34,6 +34,7 @@ jobs:
       - run: pnpm exec playwright install --with-deps chromium
       - run: pnpm test:smoke
       - run: pnpm test:review
+      - run: pnpm test:durable
       - run: pnpm test:coverage
       - name: Prepare archive and checksum
         id: archive

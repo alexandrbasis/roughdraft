@@ -211,6 +211,208 @@ describe("ReviewEventQueue", () => {
     expect(result.events.at(-1)?.sequence).toBe(105);
   });
 
+  it("reloads events from a journal and continues the sequence after restart", async () => {
+    const tempDir = fs.mkdtempSync(
+      path.join(os.tmpdir(), "roughdraft-review-events-journal-"),
+    );
+    const journalPath = path.join(tempDir, "review-events.json");
+    const documentPath = path.join(tempDir, "project", "draft.md");
+
+    try {
+      const firstQueue = new ReviewEventQueue(journalPath);
+      const first = firstQueue.emit(eventInput(documentPath));
+
+      const restartedQueue = new ReviewEventQueue(journalPath);
+      const recovered = await restartedQueue.wait({
+        documentPath,
+        afterSequence: 0,
+        timeoutMs: 0,
+      });
+      const second = restartedQueue.emit(eventInput(documentPath));
+
+      expect(recovered).toMatchObject({
+        timedOut: false,
+        events: [first.event],
+      });
+      expect(second.event.sequence).toBe(first.event.sequence + 1);
+      expect(new ReviewEventQueue(journalPath).latestSequence()).toBe(2);
+    } finally {
+      fs.rmSync(tempDir, { recursive: true, force: true });
+    }
+  });
+
+  it("fails closed when the durable journal is corrupt", () => {
+    const tempDir = fs.mkdtempSync(
+      path.join(os.tmpdir(), "roughdraft-review-events-corrupt-"),
+    );
+    const journalPath = path.join(tempDir, "review-events.json");
+
+    try {
+      fs.writeFileSync(journalPath, "{not valid json", "utf8");
+
+      expect(() => new ReviewEventQueue(journalPath)).toThrow(
+        /contains invalid JSON/,
+      );
+    } finally {
+      fs.rmSync(tempDir, { recursive: true, force: true });
+    }
+  });
+
+  it("does not acknowledge an event when the journal cannot be written", async () => {
+    const tempDir = fs.mkdtempSync(
+      path.join(os.tmpdir(), "roughdraft-review-events-write-failure-"),
+    );
+    const journalDirectory = path.join(tempDir, "journal");
+    const journalPath = path.join(journalDirectory, "review-events.json");
+    fs.mkdirSync(journalDirectory);
+    const queue = new ReviewEventQueue(journalPath);
+    fs.rmSync(journalDirectory, { recursive: true, force: true });
+    fs.writeFileSync(journalDirectory, "blocking file", "utf8");
+
+    try {
+      expect(() => queue.emit(eventInput())).toThrow(
+        /could not be persisted atomically/,
+      );
+      expect(queue.latestSequence()).toBe(0);
+      await expect(queue.wait({ timeoutMs: 0 })).resolves.toMatchObject({
+        timedOut: true,
+        events: [],
+      });
+    } finally {
+      fs.rmSync(tempDir, { recursive: true, force: true });
+    }
+  });
+
+  it("returns durable snapshots and defensive latest document events", () => {
+    const tempDir = fs.mkdtempSync(
+      path.join(os.tmpdir(), "roughdraft-review-events-snapshot-"),
+    );
+    const journalPath = path.join(tempDir, "review-events.json");
+    const documentPath = path.join(tempDir, "project", "draft.md");
+
+    try {
+      const queue = new ReviewEventQueue(journalPath);
+      const emitted = queue.emit(eventInput(documentPath));
+      const snapshot = queue.snapshot();
+      const latest = queue.latestEventForDocument(documentPath);
+
+      expect(snapshot).toEqual([emitted.event]);
+      expect(latest).toEqual(emitted.event);
+      expect(latest).not.toBe(emitted.event);
+      expect(latest?.summary).not.toBe(emitted.event.summary);
+
+      if (latest) {
+        latest.summary.comments = 99;
+        latest.documentPath = path.join(tempDir, "changed.md");
+      }
+
+      expect(queue.latestEventForDocument(documentPath)).toEqual(emitted.event);
+      expect(new ReviewEventQueue(journalPath).snapshot()).toEqual([
+        emitted.event,
+      ]);
+    } finally {
+      fs.rmSync(tempDir, { recursive: true, force: true });
+    }
+  });
+
+  it("matches symlinked document aliases for waiting and latest-event lookup", async () => {
+    const tempDir = fs.mkdtempSync(
+      path.join(os.tmpdir(), "roughdraft-review-events-symlink-"),
+    );
+    const realProject = path.join(tempDir, "real-project");
+    const aliasProject = path.join(tempDir, "alias-project");
+    const realDocument = path.join(realProject, "draft.md");
+    const aliasDocument = path.join(aliasProject, "draft.md");
+
+    try {
+      fs.mkdirSync(realProject, { recursive: true });
+      fs.writeFileSync(realDocument, "draft", "utf8");
+      fs.symlinkSync(realProject, aliasProject, "dir");
+
+      vi.useFakeTimers();
+      const queue = new ReviewEventQueue();
+      const waiting = queue.wait({
+        documentPath: aliasDocument,
+        timeoutMs: 1_000,
+        batchWindowMs: 0,
+      });
+
+      expect(queue.waiterCountForDocument(realDocument)).toBe(1);
+      const emitted = queue.emit(eventInput(realDocument));
+      await vi.advanceTimersByTimeAsync(0);
+
+      await expect(waiting).resolves.toMatchObject({
+        timedOut: false,
+        events: [emitted.event],
+      });
+      expect(queue.latestEventForDocument(aliasDocument)).toEqual(
+        emitted.event,
+      );
+    } finally {
+      vi.useRealTimers();
+      fs.rmSync(tempDir, { recursive: true, force: true });
+    }
+  });
+
+  it("keeps durable history when 100 other documents complete in the same project", async () => {
+    const tempDir = fs.mkdtempSync(
+      path.join(os.tmpdir(), "roughdraft-review-events-durable-retention-"),
+    );
+    const journalPath = path.join(tempDir, "review-events.json");
+    const projectPath = path.join(tempDir, "project");
+    const awaitedDocument = path.join(projectPath, "awaited.md");
+
+    try {
+      const queue = new ReviewEventQueue(journalPath);
+      const awaited = queue.emit(eventInput(awaitedDocument));
+      for (let index = 0; index < 100; index += 1) {
+        queue.emit(eventInput(path.join(projectPath, `other-${index}.md`)));
+      }
+
+      const restartedQueue = new ReviewEventQueue(journalPath);
+      const result = await restartedQueue.wait({
+        documentPath: awaitedDocument,
+        afterSequence: 0,
+        timeoutMs: 0,
+      });
+
+      expect(result).toMatchObject({
+        timedOut: false,
+        events: [awaited.event],
+      });
+      expect(restartedQueue.snapshot()).toHaveLength(101);
+    } finally {
+      fs.rmSync(tempDir, { recursive: true, force: true });
+    }
+  });
+
+  it("does not evict one project's retained history with another project's events", async () => {
+    const tempDir = fs.mkdtempSync(
+      path.join(os.tmpdir(), "roughdraft-review-events-retention-"),
+    );
+    const projectA = path.join(tempDir, "project-a");
+    const projectB = path.join(tempDir, "project-b");
+    const queue = new ReviewEventQueue();
+    const first = queue.emit(eventInput(path.join(projectA, "draft.md")));
+
+    try {
+      for (let index = 0; index < 100; index += 1) {
+        queue.emit(eventInput(path.join(projectB, `${index}.md`)));
+      }
+
+      const result = await queue.wait({
+        documentPath: path.join(projectA, "draft.md"),
+        afterSequence: 0,
+        timeoutMs: 0,
+      });
+
+      expect(result.timedOut).toBe(false);
+      expect(result.events).toEqual([first.event]);
+    } finally {
+      fs.rmSync(tempDir, { recursive: true, force: true });
+    }
+  });
+
   it("honors an explicit queue timeout beyond the old five-minute clamp", async () => {
     vi.useFakeTimers();
     const queue = new ReviewEventQueue();

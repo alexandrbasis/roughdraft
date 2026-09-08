@@ -604,7 +604,7 @@ export function EditorContextMenu({
   }, [linkPopoverState]);
 
   const handlePasteText = useCallback(async () => {
-    if (!editor) return;
+    if (!editor || !navigator.clipboard?.readText) return;
 
     try {
       const text = await navigator.clipboard.readText();
@@ -617,7 +617,7 @@ export function EditorContextMenu({
   }, [close, editor]);
 
   const handlePasteMarkdown = useCallback(async () => {
-    if (!editor) return;
+    if (!editor || !navigator.clipboard?.readText) return;
 
     try {
       const text = await navigator.clipboard.readText();
@@ -1006,6 +1006,7 @@ export function EditorContextMenu({
           <button
             type="button"
             data-testid="editor-context-menu-action-paste"
+            disabled={!navigator.clipboard?.readText}
             className="block w-full rounded-xl px-3 py-2 text-left text-sm text-slate-700 dark:text-slate-300 transition hover:bg-slate-50 dark:hover:bg-slate-700"
             onClick={() => void handlePasteText()}
           >
@@ -1014,11 +1015,17 @@ export function EditorContextMenu({
           <button
             type="button"
             data-testid="editor-context-menu-action-paste-markdown"
+            disabled={!navigator.clipboard?.readText}
             className="block w-full rounded-xl px-3 py-2 text-left text-sm text-slate-700 dark:text-slate-300 transition hover:bg-slate-50 dark:hover:bg-slate-700"
             onClick={() => void handlePasteMarkdown()}
           >
             Paste Markdown
           </button>
+          {!navigator.clipboard?.readText ? (
+            <p className="px-3 py-2 text-xs text-slate-500 dark:text-slate-400">
+              Use ⌘V or Ctrl+V to paste at this address.
+            </p>
+          ) : null}
         </div>
       ) : null}
     </div>

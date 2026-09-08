@@ -18,11 +18,18 @@ import {
 } from "./network.js";
 import { findAvailablePort } from "./ports.js";
 import { waitForReviewEvents } from "./review-events-watch.js";
+import { registerReviewLink } from "./review-link.js";
+import { runDomainCommand } from "./domain-command.js";
+import { runtimeStateDirectory } from "./local-domain.js";
 import {
   readInstalledManifest,
   resolveUpdateStatus,
   type UpdateStatus,
 } from "./update-status.js";
+import {
+  acquireServerStartLock,
+  getServerStartLockPath,
+} from "./server-start-lock.js";
 
 const AGENT_SETUP_URL =
   "https://github.com/alexandrbasis/roughdraft#agent-setup";
@@ -44,6 +51,7 @@ const KNOWN_COMMANDS = [
   "watch",
   "mcp",
   "doctor",
+  "domain",
   "help",
   "agent-setup",
   "criticmarkup",
@@ -57,6 +65,8 @@ export interface RoughdraftServerState {
 }
 
 interface StatusPayload {
+  stateDirectory?: string;
+  capabilities?: { reviewRegistry?: boolean };
   backend?: string;
   pid?: number;
   projectDir?: string;
@@ -76,6 +86,7 @@ interface DevFrontendState {
 interface LiveDevFrontend {
   frontendUrl: string;
   apiUrl: string | null;
+  supportsReviewRegistry?: boolean;
 }
 
 export interface SpawnedServer {
@@ -91,6 +102,7 @@ export interface CliDependencies {
   spawnServerProcess: (options: {
     port: number;
     projectDir: string;
+    env?: NodeJS.ProcessEnv;
   }) => Promise<SpawnedServer> | SpawnedServer;
   isProcessRunning: (pid: number) => boolean;
   stopProcess: (pid: number) => Promise<void>;
@@ -108,13 +120,7 @@ type OpenMode =
   | "none";
 
 interface EnsureRunningResult {
-  server: {
-    port: number;
-    url: string;
-    tracked: boolean;
-    pid: number | null;
-    startedAt: string | null;
-  };
+  server: ReusableServer;
   reused: boolean;
   portChanged: boolean;
 }
@@ -125,6 +131,7 @@ interface ResolvedTargetPath {
 }
 
 interface ReusableServer {
+  supportsReviewRegistry?: boolean;
   port: number;
   url: string;
   tracked: boolean;
@@ -781,6 +788,7 @@ async function defaultStopProcess(pid: number): Promise<void> {
 function defaultSpawnServerProcess(options: {
   port: number;
   projectDir: string;
+  env?: NodeJS.ProcessEnv;
 }): SpawnedServer {
   const serverEntryPath = fileURLToPath(new URL("./child.js", import.meta.url));
   const child = spawn(
@@ -797,7 +805,7 @@ function defaultSpawnServerProcess(options: {
       detached: true,
       stdio: "ignore",
       windowsHide: true,
-      env: process.env,
+      env: options.env ?? process.env,
     },
   );
 
@@ -860,6 +868,7 @@ function printHelp(log: (message: string) => void) {
   log("  watch <path>       Wait for a Done Reviewing event");
   log("  mcp                Start the experimental stdio MCP server");
   log("  doctor [path]      Diagnose setup or validate Markdown");
+  log("  domain             Configure a readable local review address");
   log("  help agent         Print the agent setup prompt");
   log("  help criticmarkup  Show CriticMarkup examples");
   log("  agent-setup        Print the agent setup prompt");
@@ -887,6 +896,12 @@ function printCommandHelp(
   command: KnownCommand,
   log: (message: string) => void,
 ) {
+  if (command === "domain") {
+    log("Usage: roughdraft domain setup [hostname] [--json]");
+    log("       roughdraft domain enable <http://hostname> [--json]");
+    log("       roughdraft domain status|disable [--json]");
+    return;
+  }
   if (command === "open") {
     log("Usage:");
     log(
@@ -1559,7 +1574,22 @@ function writeServerStateToDisk(
   state: RoughdraftServerState,
 ) {
   fs.mkdirSync(path.dirname(stateFilePath), { recursive: true });
-  fs.writeFileSync(stateFilePath, `${JSON.stringify(state, null, 2)}\n`);
+  const temporaryPath = path.join(
+    path.dirname(stateFilePath),
+    `.${path.basename(stateFilePath)}.${process.pid}.${crypto.randomUUID()}.tmp`,
+  );
+
+  try {
+    fs.writeFileSync(temporaryPath, `${JSON.stringify(state, null, 2)}\n`, {
+      encoding: "utf8",
+      flag: "wx",
+    });
+    fs.renameSync(temporaryPath, stateFilePath);
+  } finally {
+    try {
+      fs.unlinkSync(temporaryPath);
+    } catch {}
+  }
 }
 
 function removeServerStateFile(stateFilePath: string) {
@@ -1639,6 +1669,7 @@ async function resolveLiveDevFrontendBaseUrl(
 
   try {
     const frontendUrl = new URL(state.url);
+    let supportsReviewRegistry = false;
     const mode =
       state.mode ?? (state.apiPort === null ? "preview-web" : "full-dev");
 
@@ -1661,6 +1692,7 @@ async function resolveLiveDevFrontendBaseUrl(
       }
 
       const payload = (await response.json()) as StatusPayload;
+      supportsReviewRegistry = payload.capabilities?.reviewRegistry === true;
       if (payload.backend !== "local-files") {
         return null;
       }
@@ -1686,6 +1718,7 @@ async function resolveLiveDevFrontendBaseUrl(
     frontendUrl.hash = "";
     return {
       frontendUrl: frontendUrl.toString(),
+      supportsReviewRegistry,
       apiUrl:
         mode === "full-dev" && state.apiPort !== null
           ? buildPublicBaseUrl(state.apiPort)
@@ -1725,7 +1758,10 @@ async function findReusableServer(
 
   const matchesServerRoot = (payload: StatusPayload | null) =>
     payload?.serverRoot
-      ? path.resolve(payload.serverRoot) === expectedServerRoot
+      ? path.resolve(payload.serverRoot) === expectedServerRoot &&
+        (!payload.stateDirectory ||
+          path.resolve(payload.stateDirectory) ===
+            runtimeStateDirectory(deps.env))
       : false;
 
   if (persistedState) {
@@ -1743,6 +1779,8 @@ async function findReusableServer(
         tracked: true,
         pid: normalizedState.pid,
         startedAt: normalizedState.startedAt,
+        supportsReviewRegistry:
+          statusPayload.capabilities?.reviewRegistry === true,
       };
     }
 
@@ -1753,6 +1791,8 @@ async function findReusableServer(
         port: persistedState.port,
         url: buildPublicBaseUrl(persistedState.port),
         tracked: false,
+        supportsReviewRegistry:
+          statusPayload.capabilities?.reviewRegistry === true,
         pid: null,
         startedAt: null,
       };
@@ -1768,6 +1808,8 @@ async function findReusableServer(
     port: preferredPort,
     url: buildPublicBaseUrl(preferredPort),
     tracked: false,
+    supportsReviewRegistry:
+      preferredStatus.capabilities?.reviewRegistry === true,
     pid: null,
     startedAt: null,
   };
@@ -1799,47 +1841,59 @@ export async function ensureServerRunning(
   deps: CliDependencies,
   options: { projectDir?: string } = {},
 ): Promise<EnsureRunningResult> {
-  const reusableServer = await findReusableServer(deps, {
-    serverRoot: currentServerRoot,
-  });
-  if (reusableServer) {
-    return { server: reusableServer, reused: true, portChanged: false };
-  }
-
-  const preferredPort = getPreferredPort(deps.env);
-  const port = await deps.findAvailablePortImpl(preferredPort);
-  const projectDir = path.resolve(options.projectDir ?? deps.cwd);
-  const spawned = await deps.spawnServerProcess({
-    port,
-    projectDir,
-  });
-
+  const stateFilePath = getServerStateFilePath(deps.env);
+  const startupLock = await acquireServerStartLock(
+    getServerStartLockPath(stateFilePath),
+  );
   try {
-    await waitForServer(port, deps);
-  } catch (error) {
-    await deps.stopProcess(spawned.pid);
-    throw error;
+    const reusableServer = await findReusableServer(deps, {
+      serverRoot: currentServerRoot,
+    });
+    if (reusableServer) {
+      return { server: reusableServer, reused: true, portChanged: false };
+    }
+
+    const preferredPort = getPreferredPort(deps.env);
+    const port = await deps.findAvailablePortImpl(preferredPort);
+    const projectDir = path.resolve(options.projectDir ?? deps.cwd);
+    const spawned = await deps.spawnServerProcess({
+      env: deps.env,
+      port,
+      projectDir,
+    });
+
+    let statusPayload: StatusPayload;
+    try {
+      statusPayload = await waitForServer(port, deps);
+    } catch (error) {
+      await deps.stopProcess(spawned.pid);
+      throw error;
+    }
+
+    const state: RoughdraftServerState = {
+      port,
+      pid: spawned.pid,
+      startedAt: new Date().toISOString(),
+      url: buildPublicBaseUrl(port),
+    };
+    writeServerStateToDisk(stateFilePath, state);
+
+    return {
+      server: {
+        port: state.port,
+        url: state.url,
+        tracked: true,
+        pid: state.pid,
+        startedAt: state.startedAt,
+        supportsReviewRegistry:
+          statusPayload.capabilities?.reviewRegistry === true,
+      },
+      reused: false,
+      portChanged: port !== preferredPort,
+    };
+  } finally {
+    startupLock.release();
   }
-
-  const state: RoughdraftServerState = {
-    port,
-    pid: spawned.pid,
-    startedAt: new Date().toISOString(),
-    url: buildPublicBaseUrl(port),
-  };
-  writeServerStateToDisk(getServerStateFilePath(deps.env), state);
-
-  return {
-    server: {
-      port: state.port,
-      url: state.url,
-      tracked: true,
-      pid: state.pid,
-      startedAt: state.startedAt,
-    },
-    reused: false,
-    portChanged: port !== preferredPort,
-  };
 }
 
 function buildServerStatusJson(
@@ -2114,6 +2168,7 @@ async function runWatch(
   targetPath: string,
   options: ParsedWatchOptions,
   json: boolean,
+  afterSequence?: number,
 ): Promise<number> {
   const target = resolveTargetPath(targetPath);
   let serverUrl = options.serverUrl;
@@ -2126,7 +2181,8 @@ async function runWatch(
   const relativePath = path.relative(target.projectDir, target.openPath);
   const payload = await waitForReviewEvents({
     fetchImpl: deps.fetchImpl,
-    fromNow: !options.replay,
+    fromNow: !options.replay && afterSequence === undefined,
+    afterSequence: options.replay ? undefined : afterSequence,
     request: {
       projectPath: target.projectDir,
       path: relativePath,
@@ -2135,6 +2191,14 @@ async function runWatch(
     sleepImpl: deps.sleepImpl,
     timeoutSeconds: options.timeoutSeconds,
     url: new URL("/api/review-events/watch", serverUrl),
+    onTransportFailure: options.serverUrl
+      ? undefined
+      : async () => {
+          const recovered = await ensureServerRunning(deps, {
+            projectDir: target.projectDir,
+          });
+          return new URL("/api/review-events/watch", recovered.server.url);
+        },
   });
 
   if (json) {
@@ -2266,6 +2330,19 @@ export async function runCli(
       shouldPrintUpdateNotice = true;
       printCriticMarkupHelp(deps.log);
       return 0;
+    }
+
+    if (command === "domain") {
+      return await runDomainCommand(
+        parsed.global.json ? [...rest, "--json"] : rest,
+        {
+          env: deps.env,
+          serverRoot: currentServerRoot,
+          fetchImpl: deps.fetchImpl,
+          ensureServer: async () => (await ensureServerRunning(deps)).server,
+          log: deps.log,
+        },
+      );
     }
 
     if (command === "agent-setup") {
@@ -2715,7 +2792,25 @@ export async function runCli(
         baseUrl = buildPublicBaseUrl(result.server.port);
       }
 
-      const targetUrl = buildTargetUrl(baseUrl, openPath);
+      const registrationApi = result?.server.supportsReviewRegistry
+        ? result.server.url
+        : liveDevFrontend?.supportsReviewRegistry
+          ? liveDevFrontend.apiUrl
+          : null;
+      const reviewLink =
+        registrationApi && isMarkdownPath(openPath)
+          ? await registerReviewLink({
+              apiUrl: registrationApi,
+              documentPath: openPath,
+              env: deps.env,
+              serverRoot: currentServerRoot,
+              port:
+                result?.server.port ?? Number(new URL(registrationApi).port),
+              usePublicUrl: !liveDevFrontend,
+              fetchImpl: deps.fetchImpl,
+            })
+          : {};
+      const targetUrl = reviewLink.url ?? buildTargetUrl(baseUrl, openPath);
       let openMode: OpenMode = "disabled";
       if (!options.noOpen && deps.env.ROUGHDRAFT_NO_OPEN !== "1") {
         openMode = (await sendOpenRequestToExistingWindow(
@@ -2770,7 +2865,13 @@ export async function runCli(
           timeoutSeconds: options.timeoutSeconds,
         };
         shouldPrintUpdateNotice = false;
-        return runWatch(deps, target, watchOptions, json);
+        return runWatch(
+          deps,
+          target,
+          watchOptions,
+          json,
+          reviewLink.afterSequence,
+        );
       }
 
       if (json) {

@@ -9,12 +9,12 @@ license and stores comments and suggestions in the Markdown file.
 Use Node.js 22 or newer. Install the built package from this fork's GitHub release:
 
 ```bash
-npm install -g https://github.com/alexandrbasis/roughdraft/releases/download/v0.1.12-basis.1/alexandrbasis-roughdraft-0.1.12-basis.1.tgz
+npm install -g https://github.com/alexandrbasis/roughdraft/releases/download/v0.1.13-basis.1/alexandrbasis-roughdraft-0.1.13-basis.1.tgz
 roughdraft --version
 roughdraft open /absolute/path/to/file.md
 ```
 
-The version should be `0.1.12-basis.1`. The package is named
+The version should be `0.1.13-basis.1`. The package is named
 `@alexandrbasis/roughdraft`; the executable remains `roughdraft`. Installing it
 globally shares the executable name with the original package.
 The unscoped npm package `roughdraft` installs the original upstream version.
@@ -133,6 +133,64 @@ roughdraft mcp
 ```
 
 The MCP server exposes tools to read the review index, list pending feedback, watch review events, append replies, and mark items resolved. CriticMarkup in the Markdown file remains the durable source of truth.
+## Parallel reviews and readable links
+
+One detached server serves reviews from different folders. Concurrent CLI starts
+share a startup lock. Registered documents keep stable routes and appear on the
+homepage with pending/completed status and a live count of waiting agents.
+Opening the same file through the CLI begins another review at the same address;
+viewing or reloading its link does not change its completion status.
+
+The local server stores review registrations and completion events under
+`~/.roughdraft/`. CLI and MCP waits reconnect after transport failures; local
+waiters restart a stopped server and retain their event cursor. An explicit
+`--timeout` remains the total waiting deadline. Completion history is retained
+until you remove the state directory. Saved feedback also stays in Markdown.
+
+To use an address such as `http://review.rd/admitad-one/appsflyer`:
+
+```bash
+roughdraft domain setup review.rd
+```
+
+This prepares a hosts-file snippet and a Caddy snippet, then prints their paths.
+Add the hosts entries to your operating system's hosts file, include the generated
+Caddy snippet in your existing Caddy configuration, validate it, and reload Caddy.
+The generated listener binds only to loopback. The OS may require administrator
+permission for the hosts file. Caddy is an optional system dependency; Roughdraft
+does not install it or replace an existing configuration. See the official
+[Caddy reload commands](https://caddyserver.com/docs/command-line) and
+[loopback binding documentation](https://caddyserver.com/docs/caddyfile/directives/bind).
+
+```bash
+roughdraft domain enable http://review.rd
+roughdraft open ./draft.md --print-url
+roughdraft domain status
+```
+
+`enable` checks that the address reaches this Roughdraft installation and port
+before saving it. Each new open verifies it again. `domain disable` restores
+localhost links. `ROUGHDRAFT_PUBLIC_URL` overrides the saved setting. Until an
+address is enabled, old `?path=` links remain the default; registered routes also
+work on the local server. Names come from the nearest project root and the first
+Markdown heading; collisions receive a stable suffix.
+
+Use `ROUGHDRAFT_STATE_DIR` to isolate another server. A custom
+`ROUGHDRAFT_STATE_FILE` other than `server.json` puts its companion data in
+`<state-file>.data/`. Servers with different state directories do not share
+registrations, settings, or completion history.
+
+Pending editor changes are saved in browser storage before autosave. After a
+reload, the editor offers recovery; if the file changed on disk, both versions
+are preserved for an explicit choice. Saving is serialized per document, and a
+failed write or unavailable browser storage remains visibly unsaved. Browser
+drafts belong to that browser profile and origin; clearing its storage removes
+them. Review events already lost by older server versions cannot be reconstructed.
+
+HTTP custom names do not expose all secure-context browser APIs. Copy uses a
+fallback where supported; use Ctrl+V or Cmd+V for paste. See the
+[Clipboard API requirements](https://developer.mozilla.org/en-US/docs/Web/API/Clipboard_API).
+
 ## Local development
 ```bash
 ./scripts/setup.sh

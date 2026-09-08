@@ -1,6 +1,5 @@
 import { describe, expect, it, vi } from "vitest";
 import {
-  REVIEW_WATCH_MAX_RETRIES,
   REVIEW_WATCH_POLL_SECONDS,
   waitForReviewEvents,
 } from "./review-events-watch";
@@ -58,6 +57,7 @@ describe("waitForReviewEvents", () => {
     vi.useFakeTimers();
     vi.setSystemTime(0);
     let pollCount = 0;
+    const onTransportFailure = vi.fn();
 
     const waiting = waitForReviewEvents({
       fetchImpl: async () => {
@@ -84,11 +84,13 @@ describe("waitForReviewEvents", () => {
       sleepImpl: async (ms) => {
         await vi.advanceTimersByTimeAsync(ms);
       },
+      onTransportFailure,
       url: new URL("http://localhost/api/review-events/watch"),
     });
 
     await expect(waiting).resolves.toMatchObject({ timedOut: false });
     expect(pollCount).toBe(2);
+    expect(onTransportFailure).not.toHaveBeenCalled();
     vi.useRealTimers();
   });
 
@@ -151,7 +153,44 @@ describe("waitForReviewEvents", () => {
     });
   });
 
-  it("does not hide a permanent retryable transport failure", async () => {
+  it("starts from a caller cursor so an event before browser startup is not skipped", async () => {
+    const requestBodies: Array<Record<string, unknown>> = [];
+
+    const waiting = waitForReviewEvents({
+      fetchImpl: async (_input, init) => {
+        requestBodies.push(
+          JSON.parse(String(init?.body ?? "{}")) as Record<string, unknown>,
+        );
+        return new Response(
+          JSON.stringify({
+            events: [{ type: "review.completed", sequence: 8 }],
+            timedOut: false,
+            nextSequence: 9,
+          }),
+          { status: 200, headers: { "Content-Type": "application/json" } },
+        );
+      },
+      request: {
+        projectPath: "/tmp/project",
+        path: "draft.md",
+        batchWindowSeconds: 0,
+      },
+      afterSequence: 7,
+      url: new URL("http://localhost/api/review-events/watch"),
+    });
+
+    await expect(waiting).resolves.toMatchObject({ timedOut: false });
+    expect(requestBodies).toEqual([
+      expect.objectContaining({
+        afterSequence: 7,
+        fromNow: false,
+      }),
+    ]);
+  });
+
+  it("returns a timeout when a retryable outage reaches the explicit deadline", async () => {
+    vi.useFakeTimers();
+    vi.setSystemTime(0);
     let attempts = 0;
     const failure = new TypeError("fetch failed") as TypeError & {
       cause?: { code?: string };
@@ -168,12 +207,138 @@ describe("waitForReviewEvents", () => {
         path: "draft.md",
         batchWindowSeconds: 0,
       },
-      sleepImpl: async () => {},
+      sleepImpl: async (ms) => {
+        vi.setSystemTime(Date.now() + ms);
+      },
+      timeoutSeconds: 0.05,
       url: new URL("http://localhost/api/review-events/watch"),
     });
 
-    await expect(waiting).rejects.toBe(failure);
-    expect(attempts).toBe(REVIEW_WATCH_MAX_RETRIES + 1);
+    await expect(waiting).resolves.toMatchObject({
+      events: [],
+      timedOut: true,
+    });
+    expect(attempts).toBe(1);
+    vi.useRealTimers();
+  });
+
+  it("keeps retrying through a long outage until the transport recovers", async () => {
+    let attempts = 0;
+    const delays: number[] = [];
+    const failure = new TypeError("fetch failed") as TypeError & {
+      cause?: { code?: string };
+    };
+    failure.cause = { code: "UND_ERR_SOCKET" };
+
+    const waiting = waitForReviewEvents({
+      fetchImpl: async () => {
+        attempts += 1;
+        if (attempts <= 7) throw failure;
+        return new Response(
+          JSON.stringify({
+            events: [{ type: "review.completed", sequence: 1 }],
+            timedOut: false,
+            nextSequence: 2,
+          }),
+          { status: 200, headers: { "Content-Type": "application/json" } },
+        );
+      },
+      request: {
+        projectPath: "/tmp/project",
+        path: "draft.md",
+        batchWindowSeconds: 0,
+      },
+      sleepImpl: async (ms) => {
+        delays.push(ms);
+      },
+      url: new URL("http://localhost/api/review-events/watch"),
+    });
+
+    await expect(waiting).resolves.toMatchObject({ timedOut: false });
+    expect(attempts).toBe(8);
+    expect(delays).toEqual([100, 200, 400, 800, 1_600, 3_200, 5_000]);
+  });
+
+  it("lets the caller recover a dead daemon without resetting the cursor", async () => {
+    const requestUrls: string[] = [];
+    const failures: Array<{
+      attempt: number;
+      error: unknown;
+      url: URL;
+    }> = [];
+    let attempts = 0;
+    const failure = new TypeError("fetch failed") as TypeError & {
+      cause?: { code?: string };
+    };
+    failure.cause = { code: "ECONNREFUSED" };
+
+    const waiting = waitForReviewEvents({
+      fetchImpl: async (input) => {
+        requestUrls.push(String(input));
+        attempts += 1;
+        if (attempts === 1) {
+          return new Response(
+            JSON.stringify({ events: [], timedOut: true, nextSequence: 8 }),
+            { status: 200, headers: { "Content-Type": "application/json" } },
+          );
+        }
+        if (attempts === 2) throw failure;
+        return new Response(
+          JSON.stringify({
+            events: [{ type: "review.completed", sequence: 8 }],
+            timedOut: false,
+            nextSequence: 9,
+          }),
+          { status: 200, headers: { "Content-Type": "application/json" } },
+        );
+      },
+      request: {
+        projectPath: "/tmp/project",
+        path: "draft.md",
+        batchWindowSeconds: 0,
+      },
+      sleepImpl: async () => {},
+      onTransportFailure: async (failureContext) => {
+        failures.push(failureContext);
+        return new URL("http://restarted/api/review-events/watch");
+      },
+      url: new URL("http://old/api/review-events/watch"),
+    });
+
+    await expect(waiting).resolves.toMatchObject({ timedOut: false });
+    expect(requestUrls).toEqual([
+      "http://old/api/review-events/watch",
+      "http://old/api/review-events/watch",
+      "http://restarted/api/review-events/watch",
+    ]);
+    expect(failures).toHaveLength(1);
+    expect(failures[0]).toMatchObject({
+      attempt: 1,
+      error: failure,
+      url: new URL("http://old/api/review-events/watch"),
+    });
+  });
+
+  it("does not route HTTP validation failures through transport recovery", async () => {
+    const onTransportFailure = vi.fn();
+
+    const waiting = waitForReviewEvents({
+      fetchImpl: async () =>
+        new Response(JSON.stringify({ error: "invalid request" }), {
+          status: 400,
+          headers: { "Content-Type": "application/json" },
+        }),
+      request: {
+        projectPath: "/tmp/project",
+        path: "draft.md",
+        batchWindowSeconds: 0,
+      },
+      onTransportFailure,
+      url: new URL("http://localhost/api/review-events/watch"),
+    });
+
+    await expect(waiting).rejects.toThrow("Review watch failed: 400");
+    expect(onTransportFailure).not.toHaveBeenCalled();
   });
 
   it("clips retry delay to the remaining explicit deadline", async () => {

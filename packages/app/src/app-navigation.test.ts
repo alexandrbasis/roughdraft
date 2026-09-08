@@ -4,6 +4,7 @@ import {
   ROUGHDRAFT_FLAVORED_MARKDOWN_PATH,
   buildLocationForLinkedMarkdownDocument,
   getRequestedPathState,
+  isFriendlyReviewRoutePath,
   syncRequestedPathInUrl,
 } from "./app-navigation";
 
@@ -48,6 +49,17 @@ describe("app navigation", () => {
 
     window.history.replaceState(null, "", PREVIEW_PATH);
 
+    expect(getRequestedPathState()).toEqual({
+      rawPath: null,
+      projectPath: null,
+      documentPath: null,
+    });
+  });
+
+  it("leaves friendly review routes on their pathname", () => {
+    window.history.replaceState(null, "", "/atlas/shipping-plan");
+
+    expect(isFriendlyReviewRoutePath(window.location.pathname)).toBe(true);
     expect(getRequestedPathState()).toEqual({
       rawPath: null,
       projectPath: null,

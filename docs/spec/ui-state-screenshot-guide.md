@@ -114,6 +114,7 @@ suggestions:
 | Homepage | Workflow stage 5 | Scroll to fifth scene | `homepage-workflow-handoff-button` | Done handoff button is visible. |
 | Homepage | Workflow stage 6 | Scroll to final scene | `homepage-workflow-agent-resume` | Agent resume line and incorporated plan are visible; done button is hidden. |
 | Homepage | Update notice | Start app with backend status returning `updateStatus` | update notice component | Best captured with API mocking unless an update is actually available. |
+| Review home | Registered reviews | Start the app at `/` with `/api/reviews` returning registered records | `review-home`, `review-home-list`, `review-home-item` | Capture pending and reviewed rows, including watcher count and keyboard focus. |
 | RFM guide | Default page | `/roughdraft-flavored-markdown` | `rfm-source-editor` | Capture the source editor plus rendered output. |
 | RFM guide | Plan review example | Click `rfm-format-example-plan-review` | `rfm-format-example-plan-review` | Default example if already selected. |
 | RFM guide | Spec review example | Click `rfm-format-example-spec-review` | `rfm-format-example-spec-review` | Confirms comments/suggestions render in the embedded demo. |
@@ -156,6 +157,11 @@ suggestions:
 | Code mode | Review rail absent | Open fenced fixture with `?editor=code` | `page-card-code`, `markdown-code-editor` | Confirms fenced CriticMarkup alone does not create review rail. |
 | Error/home fallback | Non-Markdown path | Open URL with `?path=/tmp/file.txt` | homepage error message | Copy: `Roughdraft now opens one .md file at a time.` |
 | Error/home fallback | Missing/unloadable path | Open URL with invalid markdown path through local backend | homepage error message | Captures load-error homepage variant. |
+| Review routes | Friendly route | Open a registered `/project/topic` route | `rich-text-editor`, `review-home-item` | The pathname remains readable on reload; browser title combines project and topic. |
+| Draft recovery | Failed save and reload | Fail a save, reload the same tab | `draft-recovery-notice`, `draft-recovery-save` | Recovered content is visibly unsaved until explicitly saved. |
+| Draft recovery | Disk conflict | Change the file externally before reloading a pending draft | `draft-recovery-recover-local`, `draft-recovery-overwrite` | Show the current disk version first; recovery preserves both versions until the user chooses. |
+| Draft recovery | Closed tab | Close a tab after a failed save, then reopen the file | `draft-other-notice`, `draft-recovery-other` | Offer recovery of browser drafts left in another tab without deleting newer drafts. |
+| Clipboard | Local HTTP domain | Open the editor context menu on `http://review.rd` | `editor-context-menu-action-paste` | Clipboard copy uses its fallback; unavailable paste actions are disabled and explain keyboard paste. |
 ## Playwright Capture Skeleton
 ```ts
 import { chromium, devices } from "playwright";

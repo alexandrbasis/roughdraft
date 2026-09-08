@@ -20,6 +20,18 @@ export function isReservedAppPath(pathname: string) {
   );
 }
 
+export function isFriendlyReviewRoutePath(pathname: string): boolean {
+  const segments = normalizePathSeparators(pathname).split("/").slice(1);
+  return (
+    segments.length === 2 &&
+    segments.every(
+      (segment) =>
+        /^[a-z0-9](?:[a-z0-9-]{0,70}[a-z0-9])?$/.test(segment) &&
+        !segment.includes("."),
+    )
+  );
+}
+
 function getRawPathFromLocation(): string | null {
   const searchParams = new URLSearchParams(window.location.search);
   const queryPath = searchParams.get("path")?.trim();
@@ -27,6 +39,8 @@ function getRawPathFromLocation(): string | null {
 
   const normalizedPathname = normalizePathSeparators(window.location.pathname);
   if (isReservedAppPath(normalizedPathname)) return null;
+
+  if (isFriendlyReviewRoutePath(normalizedPathname)) return null;
 
   if (normalizedPathname !== "/" && !normalizedPathname.startsWith("/api")) {
     const decodedPathname = decodeURIComponent(normalizedPathname);

@@ -374,7 +374,10 @@ describe("real CLI and stdio MCP review workflow", () => {
     const serverProcess = spawnTypeScript(
       childEntry,
       ["--port", String(port), "--project-dir", projectDir],
-      { ROUGHDRAFT_BIND_HOST: "127.0.0.1" },
+      {
+        ROUGHDRAFT_BIND_HOST: "127.0.0.1",
+        ROUGHDRAFT_STATE_FILE: stateFile,
+      },
     );
     children.push(serverProcess.child);
     const baseUrl = `http://127.0.0.1:${port}`;
