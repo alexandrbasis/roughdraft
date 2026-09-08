@@ -8,6 +8,7 @@ import {
 import { useCallback, useEffect, useRef, useState } from "react";
 import { Button } from "../components/ui/button";
 import { reviewRouteHref, type ReviewRouteRecord } from "./review-route";
+import { ReviewHistory } from "./ReviewHistory";
 
 async function loadReviews(): Promise<ReviewRouteRecord[]> {
   const response = await fetch("/api/reviews");
@@ -23,7 +24,11 @@ function watcherLabel(count: number): string {
   return "No agent watching";
 }
 
-export function ReviewHome() {
+export function ReviewHome({
+  reviewHistorySupported = false,
+}: {
+  reviewHistorySupported?: boolean;
+} = {}) {
   const [reviews, setReviews] = useState<ReviewRouteRecord[] | null>(null);
   const [loading, setLoading] = useState(true);
   const [error, setError] = useState<string | null>(null);
@@ -197,61 +202,75 @@ export function ReviewHome() {
         {orderedReviews.map((review) => {
           const pending = review.status === "pending";
           return (
-            <a
-              className="group rounded-xl border border-slate-200 bg-white p-5 shadow-[0_10px_30px_rgba(15,23,42,0.05)] transition-[border-color,box-shadow,transform] duration-150 hover:-translate-y-0.5 hover:border-slate-300 hover:shadow-[0_14px_34px_rgba(15,23,42,0.1)] focus-visible:ring-2 focus-visible:ring-slate-950 focus-visible:ring-offset-2 focus-visible:outline-none dark:border-slate-700 dark:bg-slate-900 dark:hover:border-slate-500 dark:focus-visible:ring-slate-50 dark:focus-visible:ring-offset-slate-950"
-              data-testid="review-home-item"
-              href={reviewRouteHref(review.route)}
+            <div
               key={review.id}
+              data-testid="review-home-card"
+              className="rounded-xl border border-slate-200 bg-white shadow-[0_10px_30px_rgba(15,23,42,0.05)] dark:border-slate-700 dark:bg-slate-900"
             >
-              <div className="flex flex-wrap items-start justify-between gap-4">
-                <div className="min-w-0">
-                  <div className="flex items-center gap-2 text-xs font-semibold tracking-[0.12em] text-stone-500 uppercase dark:text-stone-400">
-                    <FileText className="size-4 shrink-0" aria-hidden="true" />
-                    <span className="truncate">{review.projectName}</span>
+              <a
+                className="group block rounded-xl p-5 transition-colors hover:bg-slate-50 focus-visible:ring-2 focus-visible:ring-slate-950 focus-visible:ring-offset-2 focus-visible:outline-none dark:hover:bg-slate-800 dark:focus-visible:ring-slate-50 dark:focus-visible:ring-offset-slate-950"
+                data-testid="review-home-item"
+                href={reviewRouteHref(review.route)}
+              >
+                <div className="flex flex-wrap items-start justify-between gap-4">
+                  <div className="min-w-0">
+                    <div className="flex items-center gap-2 text-xs font-semibold tracking-[0.12em] text-stone-500 uppercase dark:text-stone-400">
+                      <FileText
+                        className="size-4 shrink-0"
+                        aria-hidden="true"
+                      />
+                      <span className="truncate">{review.projectName}</span>
+                    </div>
+                    <h3 className="mt-2 truncate text-xl font-semibold text-slate-950 dark:text-slate-50">
+                      {review.title}
+                    </h3>
+                    <p className="mt-1 truncate font-mono text-xs text-stone-500 dark:text-stone-400">
+                      {review.route}
+                    </p>
                   </div>
-                  <h3 className="mt-2 truncate text-xl font-semibold text-slate-950 dark:text-slate-50">
-                    {review.title}
-                  </h3>
-                  <p className="mt-1 truncate font-mono text-xs text-stone-500 dark:text-stone-400">
-                    {review.route}
-                  </p>
+
+                  <div className="flex shrink-0 items-center gap-2 text-sm font-medium">
+                    {pending ? (
+                      <Clock3
+                        className="size-4 text-amber-600 dark:text-amber-400"
+                        aria-hidden="true"
+                      />
+                    ) : (
+                      <CheckCircle2
+                        className="size-4 text-emerald-600 dark:text-emerald-400"
+                        aria-hidden="true"
+                      />
+                    )}
+                    <span
+                      className={
+                        pending
+                          ? "text-amber-800 dark:text-amber-300"
+                          : "text-emerald-800 dark:text-emerald-300"
+                      }
+                    >
+                      {pending ? "Waiting" : "Reviewed"}
+                    </span>
+                    <ArrowUpRight
+                      className="size-4 text-stone-400 transition-transform duration-150 group-hover:translate-x-0.5 group-hover:-translate-y-0.5 dark:text-stone-500"
+                      aria-hidden="true"
+                    />
+                  </div>
                 </div>
 
-                <div className="flex shrink-0 items-center gap-2 text-sm font-medium">
-                  {pending ? (
-                    <Clock3
-                      className="size-4 text-amber-600 dark:text-amber-400"
-                      aria-hidden="true"
-                    />
-                  ) : (
-                    <CheckCircle2
-                      className="size-4 text-emerald-600 dark:text-emerald-400"
-                      aria-hidden="true"
-                    />
-                  )}
-                  <span
-                    className={
-                      pending
-                        ? "text-amber-800 dark:text-amber-300"
-                        : "text-emerald-800 dark:text-emerald-300"
-                    }
-                  >
-                    {pending ? "Waiting" : "Reviewed"}
+                <div className="mt-4 flex flex-wrap gap-x-4 gap-y-1 text-xs text-stone-500 dark:text-stone-400">
+                  <span>
+                    {pending ? "Waiting for your review" : "Review completed"}
                   </span>
-                  <ArrowUpRight
-                    className="size-4 text-stone-400 transition-transform duration-150 group-hover:translate-x-0.5 group-hover:-translate-y-0.5 dark:text-stone-500"
-                    aria-hidden="true"
-                  />
+                  <span>{watcherLabel(review.watcherCount)}</span>
                 </div>
-              </div>
-
-              <div className="mt-4 flex flex-wrap gap-x-4 gap-y-1 text-xs text-stone-500 dark:text-stone-400">
-                <span>
-                  {pending ? "Waiting for your review" : "Review completed"}
-                </span>
-                <span>{watcherLabel(review.watcherCount)}</span>
-              </div>
-            </a>
+              </a>
+              {reviewHistorySupported && review.documentPath ? (
+                <ReviewHistory
+                  documentPath={review.documentPath}
+                  title={review.title}
+                />
+              ) : null}
+            </div>
           );
         })}
       </div>

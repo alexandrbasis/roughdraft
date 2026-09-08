@@ -19,6 +19,12 @@ import { ReviewEventQueue } from "./review-events.js";
 import { ReviewRegistry } from "./review-registry.js";
 import { installReviewRoutes } from "./review-routes.js";
 import { runtimeStateDirectory } from "./local-domain.js";
+import { ReviewDatabase } from "./review-database.js";
+import { installReviewHistoryRoutes } from "./review-history-routes.js";
+import {
+  MarkdownConflictError,
+  writeMarkdownAtomically,
+} from "./atomic-markdown.js";
 import { resolveUpdateStatus } from "./update-status.js";
 
 const __dirname = path.dirname(fileURLToPath(import.meta.url));
@@ -409,28 +415,25 @@ export function createApp(options: CreateAppOptions = {}): CreateAppResult {
       : null;
   const app = express();
   const openRequestClients = new Set<OpenRequestClient>();
-  const reviewEvents = new ReviewEventQueue(
-    options.stateDirectory
-      ? path.join(options.stateDirectory, "review-events.json")
-      : undefined,
-  );
-  const reviewRegistry = new ReviewRegistry({
-    storePath: options.stateDirectory
-      ? path.join(options.stateDirectory, "review-registry.json")
-      : null,
-  });
-  for (const record of reviewRegistry.list()) {
-    const event = reviewEvents.latestEventForDocument(record.documentPath);
-    if (
-      record.status === "pending" &&
-      event &&
-      (record.openedAfterSequence !== undefined
-        ? event.sequence > record.openedAfterSequence
-        : Date.parse(event.createdAt) > Date.parse(record.openedAt)) &&
-      fs.existsSync(record.documentPath)
-    ) {
-      reviewRegistry.complete(record.documentPath, event);
+  const reviewDatabase = new ReviewDatabase(options.stateDirectory);
+  const reviewEvents = new ReviewEventQueue(reviewDatabase);
+  const reviewRegistry = new ReviewRegistry({ persistence: reviewDatabase });
+  app.locals.reviewDatabase = reviewDatabase;
+
+  function saveMarkdown(
+    file: string,
+    content: string,
+    expectedContent = fs.readFileSync(file, "utf8"),
+  ): void {
+    const writeId = reviewDatabase.prepareWrite(file, content);
+    try {
+      writeMarkdownAtomically(file, content, { expectedContent });
+    } catch (error) {
+      if (error instanceof MarkdownConflictError)
+        reviewDatabase.cancelWrite(writeId);
+      throw error;
     }
+    reviewDatabase.finishWrite(writeId);
   }
   const remoteSessions = new Map<string, RemoteSession>();
 
@@ -478,6 +481,7 @@ export function createApp(options: CreateAppOptions = {}): CreateAppResult {
   remoteSessionSweeper.unref?.();
 
   app.use(express.json({ limit: "50mb" }));
+  installReviewHistoryRoutes(app, reviewDatabase, saveMarkdown);
   installReviewRoutes(
     app,
     reviewRegistry,
@@ -625,12 +629,38 @@ export function createApp(options: CreateAppOptions = {}): CreateAppResult {
     res.write("retry: 1000\n\n");
 
     const sendChange = (stats: fs.Stats) => {
-      const exists = stats.nlink > 0;
+      let exists = stats.nlink > 0;
+      let version: string | null = null;
+      if (exists) {
+        try {
+          version = fileVersionFromFile(absolutePath);
+        } catch (error) {
+          const code = (error as NodeJS.ErrnoException)?.code;
+          if (code === "ENOENT") {
+            // The path can disappear after watchFile collected its stats.
+            exists = false;
+          } else {
+            console.error(
+              "Failed to read watched Markdown file:",
+              absolutePath,
+              error,
+            );
+            res.write(
+              `event: error\ndata: ${JSON.stringify({
+                path: relativePath,
+                error: "Unable to read Markdown file",
+                code: code ?? "UNKNOWN",
+              })}\n\n`,
+            );
+            return;
+          }
+        }
+      }
       res.write(
         `event: change\ndata: ${JSON.stringify({
           path: relativePath,
           exists,
-          version: exists ? fileVersionFromFile(absolutePath) : null,
+          version,
         })}\n\n`,
       );
     };
@@ -639,7 +669,9 @@ export function createApp(options: CreateAppOptions = {}): CreateAppResult {
       if (
         current.mtimeMs === previous.mtimeMs &&
         current.size === previous.size &&
-        current.nlink === previous.nlink
+        current.nlink === previous.nlink &&
+        current.ino === previous.ino &&
+        current.dev === previous.dev
       ) {
         return;
       }
@@ -690,23 +722,45 @@ export function createApp(options: CreateAppOptions = {}): CreateAppResult {
           author: "user",
         })
       : markdown;
-    if (persistedMarkdown !== markdown) {
-      fs.writeFileSync(target.absolutePath, persistedMarkdown);
-    }
-
     const index = extractRoughdraftReviewIndex(persistedMarkdown);
-    const result = reviewEvents.emit({
+    const completion = {
       documentPath: target.absolutePath,
       projectPath: target.projectDir,
       relativePath: target.relativePath,
       version: fileVersionFromFile(target.absolutePath),
       summary: index.summary,
       overallComment,
-    });
-
-    reviewRegistry.complete(target.absolutePath, result.event);
-
-    res.status(201).json(result);
+    };
+    const writeId = reviewDatabase.prepareWrite(
+      target.absolutePath,
+      persistedMarkdown,
+      completion,
+    );
+    try {
+      if (persistedMarkdown !== markdown)
+        writeMarkdownAtomically(target.absolutePath, persistedMarkdown, {
+          expectedContent: markdown,
+        });
+      const completedContent = fs.readFileSync(target.absolutePath);
+      const completedStats = fs.statSync(target.absolutePath);
+      if (completedContent.toString("utf8") !== persistedMarkdown)
+        throw new MarkdownConflictError(target.absolutePath);
+      const result = reviewEvents.emit(
+        {
+          ...completion,
+          version: fileVersionFromContent(completedStats, completedContent),
+        },
+        writeId,
+      );
+      res.status(201).json(result);
+    } catch (error) {
+      if (!(error instanceof MarkdownConflictError)) throw error;
+      reviewDatabase.cancelWrite(writeId);
+      res.status(409).json({
+        error:
+          "Markdown changed before review completion. Reload before completing the review.",
+      });
+    }
   });
 
   app.post("/api/review-events/watch", async (req, res) => {
@@ -788,7 +842,7 @@ export function createApp(options: CreateAppOptions = {}): CreateAppResult {
       return;
     }
     const { content } = req.body as { content: string };
-    fs.writeFileSync(filePath, content);
+    saveMarkdown(filePath, content);
     res.json({ id, title: titleFromContent(content, id), content });
   });
 
@@ -814,7 +868,11 @@ export function createApp(options: CreateAppOptions = {}): CreateAppResult {
       content: string;
       expectedVersion?: string;
     };
-    const currentVersion = fileVersionFromFile(absolutePath);
+    const expectedContent = fs.readFileSync(absolutePath, "utf8");
+    const currentVersion = fileVersionFromContent(
+      fs.statSync(absolutePath),
+      Buffer.from(expectedContent),
+    );
 
     if (expectedVersion && expectedVersion !== currentVersion) {
       res.status(409).json({
@@ -824,7 +882,16 @@ export function createApp(options: CreateAppOptions = {}): CreateAppResult {
       return;
     }
 
-    fs.writeFileSync(absolutePath, content);
+    try {
+      saveMarkdown(absolutePath, content, expectedContent);
+    } catch (error) {
+      if (!(error instanceof MarkdownConflictError)) throw error;
+      res.status(409).json({
+        error: "Markdown file changed on disk",
+        current: markdownPageFromFile(relativePath, absolutePath),
+      });
+      return;
+    }
     res.json(markdownPageFromFile(relativePath, absolutePath));
   });
 
@@ -874,6 +941,9 @@ export function createApp(options: CreateAppOptions = {}): CreateAppResult {
       stateless: true,
       capabilities: {
         reviewRegistry: true,
+        reviewHistory: true,
+        reviewAcknowledgements: true,
+        serverDrafts: true,
         durableReviewEvents: Boolean(options.stateDirectory),
         projectPathRequired: true,
         fileSystemBrowsing: true,

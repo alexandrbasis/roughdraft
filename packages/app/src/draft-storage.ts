@@ -208,13 +208,20 @@ export function createBrowserDraftStorage(): DraftStorage {
   }
 }
 
+let lastDraftTimestamp = 0;
+
+function nextDraftTimestamp() {
+  lastDraftTimestamp = Math.max(Date.now(), lastDraftTimestamp + 1);
+  return lastDraftTimestamp;
+}
+
 export function createDraftRecord({
   storageKey,
   content,
   base,
   revision,
   tabId,
-  updatedAt = Date.now(),
+  updatedAt = nextDraftTimestamp(),
 }: {
   storageKey: string;
   content: string;

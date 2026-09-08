@@ -58,6 +58,27 @@ describe("browser draft storage", () => {
     expect(getDraftTabId()).toContain("12345678");
   });
 
+  it("gives distinct edits increasing timestamps even within one clock tick", () => {
+    const clock = vi.spyOn(Date, "now").mockReturnValue(1700000000000);
+    try {
+      const input = {
+        storageKey: "/project/review.md",
+        content: "first",
+        base: baseDocument,
+        tabId: "same-tick",
+      };
+      const first = createDraftRecord({ ...input, revision: "r1" });
+      const second = createDraftRecord({
+        ...input,
+        content: "second",
+        revision: "r2",
+      });
+      expect(second.updatedAt).toBeGreaterThan(first.updatedAt);
+    } finally {
+      clock.mockRestore();
+    }
+  });
+
   it("recovers a pending draft after a failed save and a reload when disk is unchanged", () => {
     const storage = createDraftStorage(new MemoryStorage());
     const key = "roughdraft:v1:local-files:/project/review.md";

@@ -60,6 +60,11 @@ import {
 } from "./PageCard";
 import { RobotsHighFiveToy } from "./RobotsHighFiveToy";
 import type { CompleteReviewOptions, Page, StorageBackend } from "./storage";
+import {
+  createServerDraftClient,
+  type ServerDraft,
+  type ServerDraftClient,
+} from "./server-draft-client";
 import { useReviewLayoutShiftAnimation } from "./useReviewLayoutShiftAnimation";
 
 type DiskChangeState = "clean" | "changed" | "conflict" | "paused";
@@ -472,12 +477,27 @@ export function DocumentWorkspace({
   const [draftStorageError, setDraftStorageError] =
     useState<DraftStorageError | null>(null);
   const [otherTabDraftPending, setOtherTabDraftPending] = useState(false);
+  const [serverDrafts, setServerDrafts] = useState<ServerDraft[]>([]);
+  const serverDraftsRef = useRef<ServerDraft[]>([]);
+  const [serverDraftError, setServerDraftError] = useState<string | null>(null);
+  const [recoveredFromServer, setRecoveredFromServer] = useState(false);
+  const adoptedSourceRef = useRef<StoredDraft | null>(null);
+  const serverClient = useMemo(
+    () =>
+      persistDraft && backend && documentCopyPath
+        ? createServerDraftClient(backend.info, documentCopyPath)
+        : null,
+    [persistDraft, backend, documentCopyPath],
+  );
+  const serverClientRef = useRef(serverClient);
+  serverClientRef.current = serverClient;
   const sawNoWatcherAfterNotifiedRef = useRef(false);
   const copiedFileActionTimeoutRef = useRef<number | null>(null);
   const saveControllerRef = useRef<DocumentSaveController | null>(null);
   const documentChangeTrackingReadyRef = useRef(false);
   const draftStorageRef = useRef<DraftStorage | null>(null);
   const draftStorageKeyRef = useRef<string | null>(null);
+  const draftInitializedPageRef = useRef(documentPage);
   const draftBaseRef = useRef<ReturnType<typeof pageSnapshot> | null>(null);
   const draftRecordRef = useRef<StoredDraft | null>(null);
   const draftTabIdRef = useRef<string | null>(null);
@@ -499,6 +519,97 @@ export function DocumentWorkspace({
     }
     return draftStorageKey.trim();
   }, [activeDocumentPath, backend, draftStorageKey, persistDraft]);
+
+  const updateServerDrafts = useCallback((drafts: ServerDraft[]) => {
+    serverDraftsRef.current = drafts;
+    setServerDrafts(drafts);
+  }, []);
+
+  const mirrorDraft = useCallback((draft: StoredDraft) => {
+    const client = serverClientRef.current;
+    if (!client) return;
+    void client
+      .put(draft)
+      .then((saved) => {
+        if (serverClientRef.current !== client || !saved) return;
+        // Acknowledging an older revision must not clear a newer failure.
+        if (draftRecordRef.current?.revision === draft.revision)
+          setServerDraftError(null);
+      })
+      .catch(() => {
+        if (
+          serverClientRef.current === client &&
+          draftRecordRef.current?.revision === draft.revision
+        ) {
+          setServerDraftError(
+            "The server draft copy failed. Your browser draft is still available in this browser.",
+          );
+        }
+      });
+  }, []);
+
+  const removeServerDraft = useCallback(
+    (
+      draft: StoredDraft,
+      client: ServerDraftClient | null = serverClientRef.current,
+    ) => {
+      if (!client) return;
+      void client
+        .remove(draft)
+        .then(async (deleted) => {
+          if (serverClientRef.current !== client) return;
+          if (deleted) {
+            updateServerDrafts(
+              serverDraftsRef.current.filter(
+                (copy) =>
+                  copy.tabId !== draft.tabId ||
+                  copy.revision !== draft.revision,
+              ),
+            );
+          } else {
+            const remaining = await client.list();
+            if (serverClientRef.current === client)
+              updateServerDrafts(remaining);
+          }
+        })
+        .catch(() => {
+          if (serverClientRef.current === client)
+            setServerDraftError(
+              "Could not remove the old server draft copy. It may still be offered for recovery.",
+            );
+        });
+    },
+    [updateServerDrafts],
+  );
+
+  useEffect(() => {
+    let cancelled = false;
+    updateServerDrafts([]);
+    setServerDraftError(null);
+    setRecoveredFromServer(false);
+    adoptedSourceRef.current = null;
+    if (!serverClient) return;
+    void serverClient
+      .list()
+      .then((drafts) => {
+        if (!cancelled) updateServerDrafts(drafts);
+      })
+      .catch(() => {
+        if (!cancelled)
+          setServerDraftError(
+            "Could not check server drafts. Browser draft recovery is still available.",
+          );
+      });
+    const retry = () => {
+      const draft = draftRecordRef.current;
+      if (draft) mirrorDraft(draft);
+    };
+    window.addEventListener("online", retry);
+    return () => {
+      cancelled = true;
+      window.removeEventListener("online", retry);
+    };
+  }, [serverClient, updateServerDrafts, mirrorDraft]);
 
   const reportDraftStorageError = useCallback(
     (error: unknown) => {
@@ -529,6 +640,7 @@ export function DocumentWorkspace({
   useEffect(() => {
     if (!documentPage || !documentDraftStorageKey || !backend) {
       draftStorageKeyRef.current = null;
+      draftInitializedPageRef.current = null;
       draftBaseRef.current = null;
       draftRecordRef.current = null;
       setDraftRecoveryState({ kind: "none" });
@@ -536,6 +648,15 @@ export function DocumentWorkspace({
       return;
     }
 
+    // Refreshing the backend connection must not recover this live editor's
+    // own draft again and replace its failed-save state with "unsaved".
+    if (
+      draftStorageKeyRef.current === documentDraftStorageKey &&
+      draftInitializedPageRef.current === documentPage
+    ) {
+      return;
+    }
+    draftInitializedPageRef.current = documentPage;
     draftStorageKeyRef.current = documentDraftStorageKey;
     draftBaseRef.current = pageSnapshot(documentPage);
     latestLocalContentRef.current = documentPage.content;
@@ -557,6 +678,7 @@ export function DocumentWorkspace({
       const recovery = inspectDraftRecovery(draft, pageSnapshot(documentPage));
 
       draftRecordRef.current = draft;
+      if (draft) mirrorDraft(draft);
       setOtherTabDraftPending(foreignDraftPending);
       setDraftStorageError(null);
 
@@ -585,6 +707,7 @@ export function DocumentWorkspace({
     }
   }, [
     backend,
+    mirrorDraft,
     documentDraftStorageKey,
     documentPage,
     onDocumentDirtyStateChange,
@@ -637,9 +760,10 @@ export function DocumentWorkspace({
         tabId,
       });
 
+      draftRecordRef.current = draft;
+      mirrorDraft(draft);
       try {
         storage.write(draft);
-        draftRecordRef.current = draft;
         setDraftStorageError(null);
         setOtherTabDraftPending(
           storage
@@ -656,7 +780,7 @@ export function DocumentWorkspace({
         reportDraftStorageError(error);
       }
     },
-    [onDocumentLocalContentChange, reportDraftStorageError],
+    [mirrorDraft, onDocumentLocalContentChange, reportDraftStorageError],
   );
 
   const clearConfirmedDraft = useCallback(
@@ -687,32 +811,52 @@ export function DocumentWorkspace({
     async (id: string, content: string) => {
       const storage = draftStorageRef.current;
       const storageKey = draftStorageKeyRef.current;
-      let draftAtSaveStart: StoredDraft | null = null;
+      const clientAtSaveStart = serverClientRef.current;
+      let copiesAtSaveStart: StoredDraft[] = [];
+      let draftAtSaveStart: StoredDraft | null = draftRecordRef.current;
+      let localDraftAtSaveStart: StoredDraft | null = null;
 
       if (storage && storageKey) {
         try {
-          draftAtSaveStart = storage.read(
+          localDraftAtSaveStart = storage.read(
             storageKey,
             draftTabIdRef.current ?? undefined,
           );
+          if (draftAtSaveStart?.content !== content)
+            draftAtSaveStart = localDraftAtSaveStart;
+          copiesAtSaveStart = storage
+            .list(storageKey)
+            .filter((copy) => copy.content === content);
         } catch (error) {
           reportDraftStorageError(error);
         }
       }
 
+      const serverCopiesAtSaveStart: StoredDraft[] =
+        serverDraftsRef.current.filter((copy) => copy.content === content);
+      const adoptedSource = adoptedSourceRef.current;
+      if (adoptedSource) serverCopiesAtSaveStart.push(adoptedSource);
+
       await onSaveDocument(id, content);
 
       if (!storage || !storageKey || !draftAtSaveStart) return;
       if (draftAtSaveStart.content !== content) return;
+      removeServerDraft(draftAtSaveStart, clientAtSaveStart);
+      for (const copy of serverCopiesAtSaveStart)
+        removeServerDraft(copy, clientAtSaveStart);
+      if (adoptedSourceRef.current === adoptedSource)
+        adoptedSourceRef.current = null;
 
       try {
-        const removed = storage.removeIfRevision(
-          storageKey,
-          draftAtSaveStart.revision,
-          draftAtSaveStart.tabId,
-        );
+        const removed =
+          !localDraftAtSaveStart ||
+          storage.removeIfRevision(
+            storageKey,
+            localDraftAtSaveStart.revision,
+            localDraftAtSaveStart.tabId,
+          );
         if (removed) {
-          for (const copy of storage.list(storageKey)) {
+          for (const copy of copiesAtSaveStart) {
             if (copy.content === content) {
               storage.removeIfRevision(storageKey, copy.revision, copy.tabId);
             }
@@ -727,7 +871,12 @@ export function DocumentWorkspace({
         throw error;
       }
     },
-    [clearConfirmedDraft, onSaveDocument, reportDraftStorageError],
+    [
+      clearConfirmedDraft,
+      onSaveDocument,
+      removeServerDraft,
+      reportDraftStorageError,
+    ],
   );
 
   const handleDiscardDraft = useCallback(() => {
@@ -738,6 +887,16 @@ export function DocumentWorkspace({
 
     try {
       if (storage.removeIfRevision(storageKey, draft.revision, draft.tabId)) {
+        removeServerDraft(draft);
+        if (adoptedSourceRef.current) {
+          removeServerDraft(adoptedSourceRef.current);
+          storage.removeIfRevision(
+            storageKey,
+            adoptedSourceRef.current.revision,
+            adoptedSourceRef.current.tabId,
+          );
+          adoptedSourceRef.current = null;
+        }
         clearConfirmedDraft(draft);
         setDraftStorageError(null);
       } else {
@@ -746,7 +905,7 @@ export function DocumentWorkspace({
     } catch (error) {
       reportDraftStorageError(error);
     }
-  }, [clearConfirmedDraft, reportDraftStorageError]);
+  }, [clearConfirmedDraft, removeServerDraft, reportDraftStorageError]);
 
   const handleRecoverChangedDraft = useCallback(() => {
     if (draftRecoveryState.kind !== "disk-changed") return;
@@ -768,7 +927,7 @@ export function DocumentWorkspace({
     onDocumentSaveStateChange,
   ]);
 
-  const handleRecoverOtherDraft = useCallback(() => {
+  const handleRecoverOtherDraft = useCallback(async () => {
     const storage = draftStorageRef.current;
     const storageKey = draftStorageKeyRef.current;
     const tabId = draftTabIdRef.current;
@@ -781,11 +940,47 @@ export function DocumentWorkspace({
     )
       return;
     try {
-      const saved = storage
+      const client = serverClientRef.current;
+      // Re-read server candidates on explicit recovery; never restore a stale GET snapshot.
+      let remoteCandidates: ServerDraft[] = [];
+      try {
+        remoteCandidates = client ? await client.list() : [];
+      } catch {
+        setServerDraftError(
+          "Could not recover the server draft. Browser draft recovery is still available.",
+        );
+      }
+      if (
+        serverClientRef.current !== client ||
+        draftStorageKeyRef.current !== storageKey ||
+        draftRecordRef.current
+      )
+        return;
+      updateServerDrafts(remoteCandidates);
+      const localCandidates = storage
         .list(storageKey)
-        .filter((draft) => draft.tabId !== tabId)
+        .filter((draft) => draft.tabId !== tabId);
+      const candidates = [
+        ...localCandidates,
+        ...remoteCandidates.filter(
+          (remote) =>
+            !localCandidates.some(
+              (local) =>
+                local.tabId === remote.tabId &&
+                local.revision === remote.revision,
+            ),
+        ),
+      ];
+      const saved = candidates
+        .sort((left, right) => left.updatedAt - right.updatedAt)
         .at(-1);
       if (!saved) return;
+      const fromServer = remoteCandidates.some(
+        (remote) =>
+          remote.tabId === saved.tabId && remote.revision === saved.revision,
+      );
+      adoptedSourceRef.current = saved;
+      setRecoveredFromServer(fromServer);
       const adopted = createDraftRecord({
         storageKey,
         content: saved.content,
@@ -795,6 +990,7 @@ export function DocumentWorkspace({
       });
       storage.write(adopted);
       draftRecordRef.current = adopted;
+      mirrorDraft(adopted);
       const recovery = inspectDraftRecovery(
         adopted,
         pageSnapshot(documentPage),
@@ -810,10 +1006,16 @@ export function DocumentWorkspace({
         onDocumentSaveStateChange("unsaved");
       }
     } catch (error) {
-      reportDraftStorageError(error);
+      if (error instanceof DraftStorageError) reportDraftStorageError(error);
+      else
+        setServerDraftError(
+          "Could not recover the server draft. Your current document is unchanged.",
+        );
     }
   }, [
     documentPage,
+    mirrorDraft,
+    updateServerDrafts,
     onDocumentLocalContentChange,
     onDocumentDirtyStateChange,
     onDocumentSaveStateChange,
@@ -833,10 +1035,28 @@ export function DocumentWorkspace({
     const storage = draftStorageRef.current;
     const storageKey = draftStorageKeyRef.current;
     const draftAtOverwriteStart = draftRecordRef.current;
+    const clientAtOverwriteStart = serverClientRef.current;
+    const copiesAtOverwriteStart =
+      storage && storageKey
+        ? storage
+            .list(storageKey)
+            .filter((copy) => copy.content === draftAtOverwriteStart?.content)
+        : [];
+    const serverCopiesAtOverwriteStart: StoredDraft[] =
+      serverDraftsRef.current.filter(
+        (copy) => copy.content === draftAtOverwriteStart?.content,
+      );
+    const adoptedSource = adoptedSourceRef.current;
+    if (adoptedSource) serverCopiesAtOverwriteStart.push(adoptedSource);
 
     await onOverwriteDocumentOnDisk();
 
     if (!storage || !storageKey || !draftAtOverwriteStart) return;
+    removeServerDraft(draftAtOverwriteStart, clientAtOverwriteStart);
+    for (const copy of serverCopiesAtOverwriteStart)
+      removeServerDraft(copy, clientAtOverwriteStart);
+    if (adoptedSourceRef.current === adoptedSource)
+      adoptedSourceRef.current = null;
 
     try {
       const removed = storage.removeIfRevision(
@@ -845,7 +1065,7 @@ export function DocumentWorkspace({
         draftAtOverwriteStart.tabId,
       );
       if (removed) {
-        for (const copy of storage.list(storageKey)) {
+        for (const copy of copiesAtOverwriteStart) {
           if (copy.content === draftAtOverwriteStart.content) {
             storage.removeIfRevision(storageKey, copy.revision, copy.tabId);
           }
@@ -858,7 +1078,12 @@ export function DocumentWorkspace({
     } catch (error) {
       reportDraftStorageError(error);
     }
-  }, [clearConfirmedDraft, onOverwriteDocumentOnDisk, reportDraftStorageError]);
+  }, [
+    clearConfirmedDraft,
+    onOverwriteDocumentOnDisk,
+    removeServerDraft,
+    reportDraftStorageError,
+  ]);
 
   const [documentHasComments, setDocumentHasComments] = useState(
     () =>
@@ -1103,17 +1328,25 @@ export function DocumentWorkspace({
       : draftBlocksSave
         ? "conflict"
         : "clean";
-  const effectiveSaveState = draftStorageError
-    ? "error"
-    : otherTabDraftPending
-      ? "unsaved"
-      : saveState;
+  const serverDraftPending = serverDrafts.some(
+    (draft) =>
+      draft.tabId !== draftTabIdRef.current ||
+      draft.revision !== draftRecordRef.current?.revision,
+  );
+  const anyOtherDraftPending = otherTabDraftPending || serverDraftPending;
+  const effectiveSaveState =
+    draftStorageError || saveState === "error"
+      ? "error"
+      : anyOtherDraftPending
+        ? "unsaved"
+        : saveState;
   const draftRecoveryNoticeVisible =
     draftIsSafeRecovered || draftHasDiskConflict;
   const hasTopNotice =
     documentDiskChangeState !== "clean" ||
     draftRecoveryNoticeVisible ||
-    otherTabDraftPending ||
+    anyOtherDraftPending ||
+    !!serverDraftError ||
     !!draftStorageError;
   const documentPageForEditor =
     documentPage && draftContentOverride !== null
@@ -1172,7 +1405,7 @@ export function DocumentWorkspace({
       )}
     >
       <RemoteSessionBanner backend={backend} />
-      {otherTabDraftPending &&
+      {anyOtherDraftPending &&
       !draftRecoveryNoticeVisible &&
       !draftStorageError ? (
         <div
@@ -1181,8 +1414,10 @@ export function DocumentWorkspace({
           className="fixed top-3 left-1/2 z-[65] flex w-[min(calc(100vw-1rem),52rem)] -translate-x-1/2 flex-wrap items-center justify-between gap-3 rounded-lg border border-sky-300 bg-sky-50 p-4 text-sky-950 shadow-lg dark:border-sky-800 dark:bg-sky-950 dark:text-sky-100"
         >
           <p className="text-sm">
-            This browser has an unsaved draft from another tab. Save your
-            current edits before recovering it.
+            {serverDraftPending
+              ? "A server draft is available from another browser or tab."
+              : "This browser has an unsaved draft from another tab."}{" "}
+            Save your current edits before recovering it.
           </p>
           <Button
             data-testid="draft-recovery-other"
@@ -1191,8 +1426,19 @@ export function DocumentWorkspace({
             disabled={!!draftRecordRef.current || saveState === "saving"}
             onClick={handleRecoverOtherDraft}
           >
-            Recover saved browser draft
+            {serverDraftPending
+              ? "Recover server draft"
+              : "Recover saved browser draft"}
           </Button>
+        </div>
+      ) : null}
+      {serverDraftError && !draftStorageError ? (
+        <div
+          data-testid="server-draft-error"
+          role="alert"
+          className="relative z-[70] mb-4 rounded-lg border border-amber-300 bg-amber-50 p-3 text-sm text-amber-950 dark:border-amber-800 dark:bg-amber-950 dark:text-amber-100"
+        >
+          {serverDraftError}
         </div>
       ) : null}
       {draftStorageError ? (
@@ -1220,7 +1466,11 @@ export function DocumentWorkspace({
         <div
           data-testid="draft-recovery-notice"
           role="status"
-          aria-label="Recovered local draft"
+          aria-label={
+            recoveredFromServer
+              ? "Recovered server draft"
+              : "Recovered local draft"
+          }
           className="fixed top-3 left-1/2 z-[65] flex w-[min(calc(100vw-1rem),52rem)] -translate-x-1/2 flex-col gap-3 rounded-[8px] border border-sky-300 bg-sky-50 px-3 py-3 text-sky-950 shadow-[0_14px_40px_rgba(14,116,144,0.18)] dark:border-sky-800 dark:bg-sky-950 dark:text-sky-100 sm:flex-row sm:items-center sm:justify-between sm:px-4"
         >
           <div className="flex min-w-0 items-start gap-2.5">
@@ -1229,7 +1479,11 @@ export function DocumentWorkspace({
               aria-hidden="true"
             />
             <div className="min-w-0">
-              <div className="text-sm font-semibold">Recovered local draft</div>
+              <div className="text-sm font-semibold">
+                {recoveredFromServer
+                  ? "Recovered server draft"
+                  : "Recovered local draft"}
+              </div>
               <div className="mt-0.5 text-xs leading-5 text-sky-900 dark:text-sky-200">
                 Your edits were recovered after the last save failed. The
                 document is unsaved until Roughdraft confirms a new save.

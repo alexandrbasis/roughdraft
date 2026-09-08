@@ -18,6 +18,18 @@ release archive. It is not the unscoped `roughdraft` package on npm.
 These reports guided the changes. Each patch is checked against this checkout;
 an upstream proposal is not treated as proof that a bug is fixed.
 
+## Durable local reviews
+
+Version 0.1.14 adds SQLite storage for routes, review rounds, completion events,
+consumer acknowledgements, snapshots, and recoverable drafts. Existing JSON
+stores migrate together and remain on disk as backups. Markdown remains in its
+project; server writes use atomic replacement with a recoverable write journal.
+
+The home list exposes round history and snapshot preview/restore. Restoring uses
+a version check and requires another explicit confirmation after a conflict.
+Browser drafts retain an offline copy and can recover a server-confirmed copy
+from a separate browser. CLI and MCP report receipt separately from processing.
+
 ## Packaging
 
 The server build bundles the private `@roughdraft/rfm` module with
@@ -77,7 +89,7 @@ isolated npm and pnpm installations; and publishes it with its checksum and
 commit manifest. A failed verification cannot reach the publish job. Existing
 releases are not overwritten on a retry.
 
-Tags ending in the Basis channel (such as `v0.1.13-basis.1`) trigger this workflow.
+Tags ending in the Basis channel (such as `v0.1.14-basis.1`) trigger this workflow.
 The original npm publication workflow runs only in `Lex-Inc/roughdraft`.
 
 Download both the archive and `SHA256SUMS.txt` from the release into one directory,
@@ -85,7 +97,7 @@ then verify before installing:
 
 ```bash
 shasum -a 256 -c SHA256SUMS.txt
-npm install -g ./alexandrbasis-roughdraft-0.1.13-basis.1.tgz
+npm install -g ./alexandrbasis-roughdraft-0.1.14-basis.1.tgz
 roughdraft --version
 ```
 

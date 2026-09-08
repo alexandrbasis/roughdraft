@@ -7,7 +7,12 @@ interface StatusPayload {
   backend?: string;
   projectDir?: string;
   stateless?: boolean;
-  capabilities?: { remoteDocuments?: boolean };
+  serverDrafts?: boolean;
+  capabilities?: {
+    remoteDocuments?: boolean;
+    serverDrafts?: boolean;
+    reviewHistory?: boolean;
+  };
 }
 
 export async function detectBackend(): Promise<StorageBackend> {
@@ -47,6 +52,12 @@ export async function detectBackend(): Promise<StorageBackend> {
           ? "Open a markdown file"
           : "Markdown file on disk",
         projectPath: statusPayload.projectDir,
+        capabilities: {
+          serverDrafts:
+            statusPayload.serverDrafts === true ||
+            statusPayload.capabilities?.serverDrafts === true,
+          reviewHistory: statusPayload.capabilities?.reviewHistory === true,
+        },
       });
     }
   }

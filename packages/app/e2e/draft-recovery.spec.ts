@@ -6,6 +6,7 @@ import {
   codeEditor,
   createMarkdownProject,
   documentSaveStatus,
+  logE2eEvent,
   openMarkdownFile,
   readProjectFile,
   removeMarkdownProject,
@@ -31,8 +32,15 @@ test.describe("durable browser drafts", () => {
       "review.md",
       "# Review\n\nOriginal body.\n",
     );
+    // A slow typing run can start autosave mid-edit. Deliver the disk fault
+    // after typing so later keystrokes cannot replace the failed-save status.
+    let finishTyping!: () => void;
+    const typingFinished = new Promise<void>((resolve) => {
+      finishTyping = resolve;
+    });
     const failPut = async (route: import("@playwright/test").Route) => {
       if (route.request().method() === "PUT") {
+        await typingFinished;
         await route.fulfill({
           status: 503,
           contentType: "application/json",
@@ -46,6 +54,14 @@ test.describe("durable browser drafts", () => {
 
     await openMarkdownFile(page, filePath, "code");
     await appendInCodeEditor(page, "\nLocal draft after the failed save.\n");
+    const failedSave = page.waitForResponse(
+      (response) =>
+        new URL(response.url()).pathname === "/api/markdown-file" &&
+        response.request().method() === "PUT" &&
+        response.status() === 503,
+    );
+    finishTyping();
+    await failedSave;
     await expect(documentSaveStatus(page)).toHaveAttribute(
       "aria-label",
       "Save failed",
@@ -135,6 +151,86 @@ test.describe("durable browser drafts", () => {
       "Saved",
     );
     await expect(newTab.getByTestId("draft-recovery-notice")).toHaveCount(0);
+  });
+
+  test("recovers a server-confirmed draft in a separate browser @smoke", async ({
+    page,
+    browser,
+    baseURL,
+  }) => {
+    const original = "# Review\n\nOriginal body.\n";
+    const filePath = writeProjectFile(
+      projectDir,
+      "separate-browser.md",
+      original,
+    );
+    const draftText = "Server copy survives browser storage isolation.";
+    // Inject a transport failure for the disk save; draft API calls hit the real server.
+    await page.route("**/api/markdown-file?**", async (route) => {
+      if (route.request().method() === "PUT")
+        await route.abort("connectionfailed");
+      else await route.continue();
+    });
+    await openMarkdownFile(page, filePath, "code");
+    await appendInCodeEditor(page, `\n${draftText}\n`);
+    const draftUrl = `/api/reviews/drafts?${new URLSearchParams({ documentPath: fs.realpathSync(filePath) })}`;
+    await expect
+      .poll(async () => {
+        const response = await page.request.get(draftUrl);
+        if (
+          !response.ok() ||
+          !response.headers()["content-type"]?.includes("application/json")
+        )
+          return false;
+        const payload = await response.json();
+        return payload.drafts.some((draft: { content: string }) =>
+          draft.content.includes(draftText),
+        );
+      })
+      .toBe(true);
+    expect(readProjectFile(projectDir, "separate-browser.md")).toBe(original);
+    logE2eEvent("draft.server-confirmed", { diskUnchanged: true });
+    await page.close();
+
+    const separateBrowser = await browser.newContext({ baseURL });
+    try {
+      const recoveryPage = await separateBrowser.newPage();
+      await openMarkdownFile(recoveryPage, filePath, "code");
+      await expect(
+        recoveryPage.getByTestId("draft-recovery-other"),
+      ).toBeVisible();
+      expect(
+        await recoveryPage.evaluate(() =>
+          Object.keys(localStorage).filter((key) =>
+            key.startsWith("roughdraft:draft:v1:"),
+          ),
+        ),
+      ).toEqual([]);
+      await recoveryPage.getByTestId("draft-recovery-other").click();
+      await expect(codeEditor(recoveryPage)).toContainText(draftText);
+      await expect(
+        recoveryPage.getByTestId("draft-recovery-notice"),
+      ).toContainText("server");
+      expect(readProjectFile(projectDir, "separate-browser.md")).toBe(original);
+      await expect(documentSaveStatus(recoveryPage)).toHaveAttribute(
+        "aria-label",
+        "Unsaved changes",
+      );
+      await recoveryPage.getByTestId("draft-recovery-save").click();
+      await expect
+        .poll(() => readProjectFile(projectDir, "separate-browser.md"))
+        .toContain(draftText);
+      await expect
+        .poll(
+          async () =>
+            (await (await recoveryPage.request.get(draftUrl)).json()).drafts
+              .length,
+        )
+        .toBe(0);
+      logE2eEvent("draft.separate-browser-saved", { serverDraftsRemaining: 0 });
+    } finally {
+      await separateBrowser.close();
+    }
   });
 
   test("keeps both versions when disk changed before draft recovery", async ({

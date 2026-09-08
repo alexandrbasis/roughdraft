@@ -92,6 +92,21 @@ describe("detectBackend", () => {
     );
   });
 
+  it("retains advertised local draft and history capabilities from the existing status request", async () => {
+    global.fetch = vi.fn(async () =>
+      Response.json({
+        backend: "local-files",
+        serverDrafts: true,
+        capabilities: { reviewHistory: true },
+      }),
+    );
+    const backend = await detectBackend();
+    expect(backend.info).toMatchObject({
+      capabilities: { serverDrafts: true, reviewHistory: true },
+    });
+    expect(global.fetch).toHaveBeenCalledTimes(1);
+  });
+
   it("uses local storage when no server is available", async () => {
     global.fetch = vi.fn(async () => {
       throw new Error("offline");

@@ -2116,7 +2116,10 @@ describe("runCli open in remote mode", () => {
       let openedUrl: string | null = null;
 
       const cliPromise = runCli(["open", filePath], {
-        env: { ROUGHDRAFT_HOST: remote.url },
+        env: {
+          ROUGHDRAFT_HOST: remote.url,
+          ROUGHDRAFT_STATE_DIR: path.join(projectDir, ".roughdraft"),
+        },
         cwd: projectDir,
         log: (m) => logs.push(m),
         error: (m) => errors.push(m),
@@ -2195,6 +2198,7 @@ describe("runCli open in remote mode", () => {
       const cliPromise = runCli(["open", filePath], {
         env: {
           ROUGHDRAFT_HOST: remote.url,
+          ROUGHDRAFT_STATE_DIR: path.join(projectDir, ".roughdraft"),
           ROUGHDRAFT_TOKEN: "secret-token",
         },
         cwd: projectDir,
@@ -2304,7 +2308,10 @@ describe("runCli open in remote mode", () => {
       let openedUrl: string | null = null;
 
       const cliPromise = runCli(["open", filePath], {
-        env: { ROUGHDRAFT_HOST: remote.url },
+        env: {
+          ROUGHDRAFT_HOST: remote.url,
+          ROUGHDRAFT_STATE_DIR: path.join(projectDir, ".roughdraft"),
+        },
         cwd: projectDir,
         log: (m) => logs.push(m),
         error: (m) => errors.push(m),
@@ -2390,7 +2397,10 @@ describe("runCli open in remote mode", () => {
       let cliSettled = false;
 
       const cliPromise = runCli(["open", filePath], {
-        env: { ROUGHDRAFT_HOST: remote.url },
+        env: {
+          ROUGHDRAFT_HOST: remote.url,
+          ROUGHDRAFT_STATE_DIR: path.join(projectDir, ".roughdraft"),
+        },
         cwd: projectDir,
         log: (m) => logs.push(m),
         error: (m) => errors.push(m),

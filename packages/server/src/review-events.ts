@@ -17,6 +17,7 @@ export interface ReviewCompletedEventInput {
 }
 
 export interface ReviewCompletedEvent extends ReviewCompletedEventInput {
+  roundId?: string;
   type: "review.completed";
   sequence: number;
   createdAt: string;
@@ -40,6 +41,11 @@ interface ReviewEventJournal {
   version: 1;
   nextSequence: number;
   events: ReviewCompletedEvent[];
+}
+
+export interface ReviewEventPersistence {
+  loadEvents(): { events: ReviewCompletedEvent[]; nextSequence: number };
+  appendEvent(event: ReviewCompletedEvent, writeId?: string): void;
 }
 
 interface Waiter {
@@ -66,9 +72,18 @@ export class ReviewEventQueue {
   private waiters = new Set<Waiter>();
   private nextSequence = 1;
   private readonly journalPath?: string;
+  private readonly persistence?: ReviewEventPersistence;
 
-  constructor(journalPath?: string) {
+  constructor(journalPath?: string | ReviewEventPersistence) {
     if (journalPath === undefined) return;
+
+    if (typeof journalPath !== "string") {
+      this.persistence = journalPath;
+      const state = journalPath.loadEvents();
+      this.events = state.events;
+      this.nextSequence = state.nextSequence;
+      return;
+    }
 
     if (journalPath.trim().length === 0) {
       throw new Error("Review event journal path must not be empty.");
@@ -80,7 +95,10 @@ export class ReviewEventQueue {
     this.nextSequence = state.nextSequence;
   }
 
-  emit(input: ReviewCompletedEventInput): {
+  emit(
+    input: ReviewCompletedEventInput,
+    writeId?: string,
+  ): {
     delivered: boolean;
     event: ReviewCompletedEvent;
   } {
@@ -94,10 +112,13 @@ export class ReviewEventQueue {
       sequence: this.nextSequence,
       createdAt: new Date().toISOString(),
     };
-    const nextEvents = this.journalPath
-      ? [...this.events, event]
-      : retainEvents([...this.events, event], event.projectPath);
+    const nextEvents =
+      this.journalPath || this.persistence
+        ? [...this.events, event]
+        : retainEvents([...this.events, event], event.projectPath);
     const nextSequence = this.nextSequence + 1;
+
+    this.persistence?.appendEvent(event, writeId);
 
     if (this.journalPath) {
       persistJournal(this.journalPath, {

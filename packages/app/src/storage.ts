@@ -47,6 +47,7 @@ export interface BackendInfo {
   projectPath?: string;
   sessionId?: string;
   originPath?: string;
+  capabilities?: { serverDrafts?: boolean; reviewHistory?: boolean };
 }
 
 export interface StorageBackend {

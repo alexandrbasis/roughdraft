@@ -17,10 +17,14 @@ import {
   ROUGHDRAFT_PUBLIC_HOST,
 } from "./network.js";
 import { findAvailablePort } from "./ports.js";
-import { waitForReviewEvents } from "./review-events-watch.js";
+import {
+  waitForReviewEvents,
+  type ReviewWatchPayload,
+} from "./review-events-watch.js";
 import { registerReviewLink } from "./review-link.js";
 import { runDomainCommand } from "./domain-command.js";
 import { runtimeStateDirectory } from "./local-domain.js";
+import { writeMarkdownAtomically } from "./atomic-markdown.js";
 import {
   readInstalledManifest,
   resolveUpdateStatus,
@@ -49,6 +53,8 @@ const KNOWN_COMMANDS = [
   "status",
   "stop",
   "watch",
+  "history",
+  "ack",
   "mcp",
   "doctor",
   "domain",
@@ -66,7 +72,11 @@ export interface RoughdraftServerState {
 
 interface StatusPayload {
   stateDirectory?: string;
-  capabilities?: { reviewRegistry?: boolean };
+  capabilities?: {
+    reviewRegistry?: boolean;
+    reviewHistory?: boolean;
+    reviewAcknowledgements?: boolean;
+  };
   backend?: string;
   pid?: number;
   projectDir?: string;
@@ -155,6 +165,8 @@ interface ParsedCli {
 }
 
 interface ParsedCommandOptions {
+  consumerId?: string;
+  received?: boolean;
   all: boolean;
   batchWindowSeconds: number;
   help: boolean;
@@ -172,6 +184,7 @@ interface ParsedCommandOptions {
 }
 
 interface ParsedWatchOptions {
+  consumerId?: string;
   batchWindowSeconds: number;
   help: boolean;
   json: boolean;
@@ -280,6 +293,7 @@ function parseCommandOptions(
     allowOpen?: boolean;
     allowPort?: boolean;
     allowWatch?: boolean;
+    allowAck?: boolean;
   },
 ): ParsedCommandOptions {
   const parsed: ParsedCommandOptions = {
@@ -316,6 +330,24 @@ function parseCommandOptions(
     if (arg === "--all") {
       if (!options.allowAll) throw new Error(`Unknown flag: ${arg}`);
       parsed.all = true;
+      continue;
+    }
+
+    if (arg === "--received") {
+      if (!options.allowAck) throw new Error(`Unknown flag: ${arg}`);
+      parsed.received = true;
+      continue;
+    }
+
+    if (arg === "--consumer-id" || arg.startsWith("--consumer-id=")) {
+      if (!options.allowWatch && !options.allowAck)
+        throw new Error("Unknown flag: --consumer-id");
+      const next =
+        arg === "--consumer-id"
+          ? takeFlagValue(args, index, arg)
+          : { value: arg.slice("--consumer-id=".length), nextIndex: index };
+      parsed.consumerId = validateConsumerId(next.value);
+      index = next.nextIndex;
       continue;
     }
 
@@ -460,6 +492,16 @@ function parseWatchOptions(args: string[]): ParsedWatchOptions {
 
   for (let index = 0; index < args.length; index += 1) {
     const arg = args[index];
+
+    if (arg === "--consumer-id" || arg.startsWith("--consumer-id=")) {
+      const next =
+        arg === "--consumer-id"
+          ? takeFlagValue(args, index, arg)
+          : { value: arg.slice("--consumer-id=".length), nextIndex: index };
+      parsed.consumerId = validateConsumerId(next.value);
+      index = next.nextIndex;
+      continue;
+    }
 
     if (arg === "--") {
       parsed.positionals.push(...args.slice(index + 1));
@@ -866,6 +908,10 @@ function printHelp(log: (message: string) => void) {
   log("  status             Show server status");
   log("  stop               Stop the managed background server");
   log("  watch <path>       Wait for a Done Reviewing event");
+  log(
+    "  history <path>     Show review rounds, snapshots, and acknowledgements",
+  );
+  log("  ack <sequence>     Explicitly acknowledge a delivered review event");
   log("  mcp                Start the experimental stdio MCP server");
   log("  doctor [path]      Diagnose setup or validate Markdown");
   log("  domain             Configure a readable local review address");
@@ -922,6 +968,9 @@ function printCommandHelp(
     log("  --no-watch           Open the file without waiting");
     log("  --timeout <seconds>  Maximum watch time; omitted means no timeout");
     log("  --replay             Allow watch to return retained older events");
+    log(
+      "  --consumer-id <id>   Watch consumer ID; defaults to ROUGHDRAFT_CONSUMER_ID or a new ID",
+    );
     log("  --json               Print machine-readable output");
     log("  --port <port>        Preferred server port");
     log("  --state-file <path>  Server state file");
@@ -934,6 +983,16 @@ function printCommandHelp(
     log("                        (remote mode). The CLI registers a session,");
     log("                        opens an SSE channel, and writes save events");
     log("                        back to disk.");
+    log(
+      "                        Saves keep prior Markdown in the state directory's",
+    );
+    log(
+      "                        markdown-backups folder and stop on local conflicts.",
+    );
+    log(
+      "                        Offline and external edits do not automatically",
+    );
+    log("                        enter the server's review history.");
     log(
       "  ROUGHDRAFT_TOKEN      Bearer token sent on remote-document requests.",
     );
@@ -1003,6 +1062,9 @@ function printCommandHelp(
     log("Flags:");
     log("  --json                    Print machine-readable output");
     log(
+      "  --consumer-id <id>        Defaults to ROUGHDRAFT_CONSUMER_ID or a new ID",
+    );
+    log(
       "  --timeout <seconds>       Maximum wait time; omitted means no timeout",
     );
     log(
@@ -1013,6 +1075,25 @@ function printCommandHelp(
     );
     log("  --state-file <path>       Server state file");
     log("  --state-dir <dir>         Directory containing server.json");
+    return;
+  }
+
+  if (command === "history" || command === "ack") {
+    log("Usage:");
+    log(
+      command === "history"
+        ? "  roughdraft history <path> [--json]"
+        : "  roughdraft ack <sequence> --consumer-id <id> [--received] [--json]",
+    );
+    log("");
+    log(
+      command === "history"
+        ? "Shows stored review rounds, snapshots, and delivery acknowledgements."
+        : "Marks an event processed by this consumer. Use --received to record receipt only.",
+    );
+    log("  --json               Print machine-readable output");
+    log("  --state-file <path>   Server state file");
+    log("  --state-dir <dir>     Directory containing server.json");
     return;
   }
 
@@ -1203,15 +1284,6 @@ function parseSseEvents(buffer: string): ParsedSseChunk {
   return { events, remainder: normalized.slice(cursor) };
 }
 
-async function atomicWriteFile(
-  targetPath: string,
-  content: string,
-): Promise<void> {
-  const tmpPath = `${targetPath}.tmp-${process.pid}-${Date.now()}`;
-  await fs.promises.writeFile(tmpPath, content);
-  await fs.promises.rename(tmpPath, targetPath);
-}
-
 function appendTokenToViewerUrl(viewerUrl: string, token: string): string {
   if (token.length === 0) return viewerUrl;
   try {
@@ -1389,9 +1461,22 @@ async function runRemoteOpen(
           }
           if (typeof payload.content === "string") {
             try {
-              await atomicWriteFile(options.openPath, payload.content);
+              const { backupPath } = writeMarkdownAtomically(
+                options.openPath,
+                payload.content,
+                {
+                  expectedContent: content,
+                  backupDirectory: path.join(
+                    runtimeStateDirectory(deps.env),
+                    "markdown-backups",
+                  ),
+                },
+              );
+              content = payload.content;
               if (!options.json) {
                 deps.log(`Saved ${options.openPath} from remote.`);
+                if (backupPath)
+                  deps.log(`Previous version backed up to ${backupPath}.`);
               }
             } catch (error) {
               deps.error(
@@ -1399,12 +1484,18 @@ async function runRemoteOpen(
                   error instanceof Error ? error.message : String(error)
                 }`,
               );
+              return 1;
             }
           }
         }
       }
     }
   } finally {
+    try {
+      await reader.cancel();
+    } catch {
+      // Preserve the write failure if the remote stream also fails to close.
+    }
     try {
       reader.releaseLock();
     } catch {
@@ -2163,6 +2254,193 @@ async function runMarkdownDoctor(
   return validation.ok ? 0 : 1;
 }
 
+export function validateConsumerId(value: unknown): string {
+  if (typeof value !== "string" || !value.trim() || value.trim().length > 200) {
+    throw new Error(
+      "consumerId must be a non-empty string of at most 200 characters.",
+    );
+  }
+  return value.trim();
+}
+
+export function reviewConsumerId(
+  explicit: unknown,
+  env: NodeJS.ProcessEnv,
+): string {
+  if (explicit !== undefined) return validateConsumerId(explicit);
+  const configured = env.ROUGHDRAFT_CONSUMER_ID?.trim();
+  return configured
+    ? validateConsumerId(configured)
+    : `roughdraft-${crypto.randomUUID()}`;
+}
+
+export function validateReviewSequence(value: unknown): number {
+  if (typeof value !== "number" || !Number.isSafeInteger(value) || value <= 0) {
+    throw new Error("sequence must be a positive safe integer.");
+  }
+  return value;
+}
+
+async function requestReviewApi(
+  fetchImpl: typeof fetch,
+  url: URL,
+  body?: Record<string, unknown>,
+): Promise<unknown> {
+  const response = await fetchImpl(url, {
+    signal: AbortSignal.timeout(5_000),
+    ...(body
+      ? {
+          method: "POST",
+          headers: { "Content-Type": "application/json" },
+          body: JSON.stringify(body),
+        }
+      : {}),
+  });
+  if (!response.ok) {
+    throw new Error(
+      `Roughdraft ${url.pathname} failed (HTTP ${response.status}).`,
+    );
+  }
+  return response.json();
+}
+
+async function supportsReviewApi(
+  fetchImpl: typeof fetch,
+  serverUrl: string,
+  capability: "reviewHistory" | "reviewAcknowledgements",
+): Promise<boolean> {
+  const status = (await requestReviewApi(
+    fetchImpl,
+    new URL(STATUS_PATH, serverUrl),
+  )) as StatusPayload;
+  return status?.capabilities?.[capability] === true;
+}
+
+interface ReviewAcknowledgement {
+  sequence: number;
+  consumerId: string;
+  status: "received" | "processed";
+  updatedAt: string;
+}
+
+interface ReviewHistoryPayload {
+  rounds: Array<{
+    id: string;
+    status: string;
+    openedAt?: string;
+    eventSequence?: number;
+    [key: string]: unknown;
+  }>;
+  snapshots: Array<{
+    id: string;
+    version: string;
+    reason: string;
+    [key: string]: unknown;
+  }>;
+  acknowledgements: ReviewAcknowledgement[];
+}
+
+export async function getReviewHistory(
+  fetchImpl: typeof fetch,
+  serverUrl: string,
+  documentPath: string,
+): Promise<ReviewHistoryPayload> {
+  if (!(await supportsReviewApi(fetchImpl, serverUrl, "reviewHistory"))) {
+    throw new Error(
+      "This Roughdraft server does not support review history. Update the server.",
+    );
+  }
+  const url = new URL("/api/reviews/history", serverUrl);
+  url.searchParams.set("documentPath", documentPath);
+  return (await requestReviewApi(fetchImpl, url)) as ReviewHistoryPayload;
+}
+
+export async function acknowledgeReviewEvent(
+  fetchImpl: typeof fetch,
+  serverUrl: string,
+  sequence: number,
+  consumerId: string,
+  status: "received" | "processed" = "processed",
+): Promise<ReviewAcknowledgement> {
+  validateReviewSequence(sequence);
+  validateConsumerId(consumerId);
+  if (status !== "received" && status !== "processed")
+    throw new Error("status must be received or processed.");
+  if (
+    !(await supportsReviewApi(fetchImpl, serverUrl, "reviewAcknowledgements"))
+  ) {
+    throw new Error(
+      "This Roughdraft server does not support review acknowledgements. Update the server.",
+    );
+  }
+  return (await requestReviewApi(
+    fetchImpl,
+    new URL("/api/review-events/ack", serverUrl),
+    { sequence, consumerId, status },
+  )) as ReviewAcknowledgement;
+}
+
+function reviewEventSequences(payload: ReviewWatchPayload): number[] {
+  return [
+    ...new Set(
+      (payload.events ?? []).flatMap((event) => {
+        const sequence =
+          event && typeof event === "object" && "sequence" in event
+            ? event.sequence
+            : undefined;
+        return typeof sequence === "number" &&
+          Number.isSafeInteger(sequence) &&
+          sequence > 0
+          ? [sequence]
+          : [];
+      }),
+    ),
+  ];
+}
+
+export async function acknowledgeReceivedReviews(
+  fetchImpl: typeof fetch,
+  serverUrl: string,
+  payload: ReviewWatchPayload,
+  consumerId: string,
+): Promise<ReviewWatchPayload> {
+  const delivered = { ...payload, consumerId };
+  const sequences = reviewEventSequences(payload);
+  if (!sequences.length) return delivered;
+  const warnings: string[] = [];
+  const acknowledgements: ReviewAcknowledgement[] = [];
+  try {
+    if (
+      !(await supportsReviewApi(fetchImpl, serverUrl, "reviewAcknowledgements"))
+    )
+      return delivered;
+    for (const sequence of sequences) {
+      try {
+        acknowledgements.push(
+          (await requestReviewApi(
+            fetchImpl,
+            new URL("/api/review-events/ack", serverUrl),
+            { sequence, consumerId, status: "received" },
+          )) as ReviewAcknowledgement,
+        );
+      } catch (error) {
+        warnings.push(
+          `Review event ${sequence} was delivered, but receipt for consumer ${consumerId} could not be acknowledged: ${error instanceof Error ? error.message : String(error)}`,
+        );
+      }
+    }
+  } catch (error) {
+    warnings.push(
+      `Review events were delivered, but acknowledgement support could not be checked: ${error instanceof Error ? error.message : String(error)}`,
+    );
+  }
+  return {
+    ...delivered,
+    acknowledgements,
+    ...(warnings.length ? { warnings } : {}),
+  };
+}
+
 async function runWatch(
   deps: CliDependencies,
   targetPath: string,
@@ -2170,6 +2448,7 @@ async function runWatch(
   json: boolean,
   afterSequence?: number,
 ): Promise<number> {
+  const consumerId = reviewConsumerId(options.consumerId, deps.env);
   const target = resolveTargetPath(targetPath);
   let serverUrl = options.serverUrl;
   if (!serverUrl) {
@@ -2179,7 +2458,7 @@ async function runWatch(
     serverUrl = result.server.url;
   }
   const relativePath = path.relative(target.projectDir, target.openPath);
-  const payload = await waitForReviewEvents({
+  const watched = await waitForReviewEvents({
     fetchImpl: deps.fetchImpl,
     fromNow: !options.replay && afterSequence === undefined,
     afterSequence: options.replay ? undefined : afterSequence,
@@ -2197,9 +2476,17 @@ async function runWatch(
           const recovered = await ensureServerRunning(deps, {
             projectDir: target.projectDir,
           });
+          serverUrl = recovered.server.url;
           return new URL("/api/review-events/watch", recovered.server.url);
         },
   });
+
+  const payload = await acknowledgeReceivedReviews(
+    deps.fetchImpl,
+    serverUrl,
+    watched,
+    consumerId,
+  );
 
   if (json) {
     emitJson(deps.log, payload);
@@ -2213,6 +2500,20 @@ async function runWatch(
 
   deps.log(`Review completed for ${target.openPath}.`);
   deps.log(`Received ${(payload.events ?? []).length} event(s).`);
+  deps.log(`Consumer ID: ${consumerId}`);
+  for (const acknowledgement of (payload.acknowledgements ??
+    []) as ReviewAcknowledgement[]) {
+    deps.log(`Receipt ${acknowledgement.sequence}: ${acknowledgement.status}.`);
+  }
+  if (payload.acknowledgements !== undefined) {
+    for (const sequence of reviewEventSequences(payload)) {
+      deps.log(
+        `After processing, run: roughdraft ack ${sequence} --consumer-id '${consumerId.replaceAll("'", "'\\''")}'`,
+      );
+    }
+  }
+  for (const warning of (payload.warnings ?? []) as string[])
+    deps.error(`Warning: ${warning}`);
   return 0;
 }
 
@@ -2640,6 +2941,90 @@ export async function runCli(
       return 0;
     }
 
+    if (command === "history" || command === "ack") {
+      let options: ParsedCommandOptions;
+      let sequence: number | undefined;
+      try {
+        options = parseCommandOptions(rest, { allowAck: command === "ack" });
+        if (options.help) {
+          printCommandHelp(command, deps.log);
+          return 0;
+        }
+        if (options.positionals.length !== 1)
+          throw new Error(
+            `Usage: roughdraft ${command} ${command === "history" ? "<path> [--json]" : "<sequence> --consumer-id <id> [--received] [--json]"}`,
+          );
+        if (command === "ack") {
+          const rawSequence = options.positionals[0] ?? "";
+          if (!/^\d+$/.test(rawSequence))
+            throw new Error("sequence must be a positive safe integer.");
+          sequence = validateReviewSequence(Number(rawSequence));
+          validateConsumerId(options.consumerId);
+        }
+      } catch (error) {
+        deps.error(error instanceof Error ? error.message : "Invalid usage.");
+        return USAGE_ERROR;
+      }
+      deps = applyCliEnvOverrides(deps, options);
+      try {
+        const server = await findReusableServer(deps);
+        if (!server)
+          throw new Error(
+            "Roughdraft is not running. Start it before requesting review history or acknowledging an event.",
+          );
+        const json = parsed.global.json || options.json;
+        if (command === "history") {
+          const documentPath = path.resolve(
+            deps.cwd,
+            options.positionals[0] ?? "",
+          );
+          const history = await getReviewHistory(
+            deps.fetchImpl,
+            server.url,
+            documentPath,
+          );
+          if (json) emitJson(deps.log, history);
+          else {
+            deps.log(`Review history for ${documentPath}`);
+            deps.log(
+              `${history.rounds.length} round(s), ${history.snapshots.length} snapshot(s), ${history.acknowledgements.length} acknowledgement(s).`,
+            );
+            for (const round of history.rounds)
+              deps.log(
+                `Round ${round.id}: ${round.status}${round.openedAt ? `, opened ${round.openedAt}` : ""}${round.eventSequence !== undefined ? `, event ${round.eventSequence}` : ""}`,
+              );
+            for (const snapshot of history.snapshots)
+              deps.log(
+                `Snapshot ${snapshot.id}: ${snapshot.reason}, version ${snapshot.version}`,
+              );
+            for (const ack of history.acknowledgements)
+              deps.log(
+                `Event ${ack.sequence}: ${ack.consumerId} ${ack.status}`,
+              );
+          }
+        } else {
+          const ack = await acknowledgeReviewEvent(
+            deps.fetchImpl,
+            server.url,
+            sequence as number,
+            options.consumerId as string,
+            options.received ? "received" : "processed",
+          );
+          if (json) emitJson(deps.log, ack);
+          else
+            deps.log(
+              `Review event ${ack.sequence}: ${ack.status} by ${ack.consumerId}.`,
+            );
+        }
+        return 0;
+      } catch (error) {
+        deps.error(
+          error instanceof Error ? error.message : "Review request failed.",
+        );
+        return 1;
+      }
+    }
+
     if (command === "watch") {
       let options: ParsedWatchOptions;
       try {
@@ -2854,6 +3239,7 @@ export async function runCli(
         }
 
         const watchOptions: ParsedWatchOptions = {
+          consumerId: options.consumerId,
           batchWindowSeconds: options.batchWindowSeconds,
           help: false,
           json,

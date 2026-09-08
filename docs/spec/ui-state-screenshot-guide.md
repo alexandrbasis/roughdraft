@@ -115,6 +115,11 @@ suggestions:
 | Homepage | Workflow stage 6 | Scroll to final scene | `homepage-workflow-agent-resume` | Agent resume line and incorporated plan are visible; done button is hidden. |
 | Homepage | Update notice | Start app with backend status returning `updateStatus` | update notice component | Best captured with API mocking unless an update is actually available. |
 | Review home | Registered reviews | Start the app at `/` with `/api/reviews` returning registered records | `review-home`, `review-home-list`, `review-home-item` | Capture pending and reviewed rows, including watcher count and keyboard focus. |
+| Review home | Round history | Expand History beside a registered review on a capable server | button named History, region named Review history | Show separate received/processed acknowledgements for each round; include a round with no acknowledgement. |
+| Review home | Snapshot preview | Choose View snapshot from expanded history | dialog named Snapshot, button named Restore snapshot | Capture content, timestamp and explicit restore action. |
+| Review home | Restore conflict | Preview a snapshot, edit the file externally, then restore | snapshot dialog, role=alert | Preserve the external edit; refresh current version before another explicit restore. |
+| Document | Server draft available | Leave a server-confirmed unsaved draft, open the same file in a separate browser context | `draft-recovery-other` | Recovery is explicit and does not save to Markdown until confirmed. |
+| Document | Server draft copy failed | Fail PUT `/api/reviews/drafts` while editing | `server-draft-error` | Local draft remains; server copy failure is separate from disk save status. |
 | RFM guide | Default page | `/roughdraft-flavored-markdown` | `rfm-source-editor` | Capture the source editor plus rendered output. |
 | RFM guide | Plan review example | Click `rfm-format-example-plan-review` | `rfm-format-example-plan-review` | Default example if already selected. |
 | RFM guide | Spec review example | Click `rfm-format-example-spec-review` | `rfm-format-example-spec-review` | Confirms comments/suggestions render in the embedded demo. |

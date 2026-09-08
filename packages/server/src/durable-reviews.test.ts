@@ -6,6 +6,7 @@ import { afterEach, beforeEach, expect, it } from "vitest";
 import { createApp } from "./index";
 import { callTool } from "./mcp";
 import { ReviewEventQueue } from "./review-events";
+import { ReviewRegistry } from "./review-registry";
 
 let directory: string;
 let project: string;
@@ -85,10 +86,10 @@ it("preserves a readable route, completion, and replay cursor across server recr
     afterSequence: done.body.event.sequence,
   });
   // Simulate reopening within the same clock millisecond as the prior Done.
-  const registryFile = path.join(stateDirectory, "review-registry.json");
-  const registry = JSON.parse(fs.readFileSync(registryFile, "utf8"));
-  registry.records[0].openedAt = done.body.event.createdAt;
-  fs.writeFileSync(registryFile, JSON.stringify(registry));
+  restarted.locals.reviewDatabase.saveRecord(
+    { ...reopened.body, openedAt: done.body.event.createdAt },
+    false,
+  );
   const reopenedServer = createApp({ stateDirectory }).app;
   expect(
     (await request(reopenedServer).get("/api/reviews")).body,
@@ -102,9 +103,10 @@ it("keeps default in-memory app instances independent", async () => {
   expect((await request(second).get("/api/reviews")).body).toEqual([]);
 });
 
-it("repairs a pending inbox entry if the process stopped after journaling Done", async () => {
-  const first = createApp({ stateDirectory }).app;
-  await request(first).post("/api/reviews").send({ documentPath }).expect(201);
+it("migrates a legacy inbox entry if the old process stopped after journaling Done", async () => {
+  new ReviewRegistry({ stateDir: stateDirectory }).register(documentPath, {
+    afterSequence: 0,
+  });
   const queue = new ReviewEventQueue(
     path.join(stateDirectory, "review-events.json"),
   );

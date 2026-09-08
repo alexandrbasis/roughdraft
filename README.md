@@ -6,15 +6,15 @@ license and stores comments and suggestions in the Markdown file.
 
 ## Install this fork
 
-Use Node.js 22 or newer. Install the built package from this fork's GitHub release:
+Use Node.js 22.13 or newer. Install the built package from this fork's GitHub release:
 
 ```bash
-npm install -g https://github.com/alexandrbasis/roughdraft/releases/download/v0.1.13-basis.1/alexandrbasis-roughdraft-0.1.13-basis.1.tgz
+npm install -g https://github.com/alexandrbasis/roughdraft/releases/download/v0.1.14-basis.1/alexandrbasis-roughdraft-0.1.14-basis.1.tgz
 roughdraft --version
 roughdraft open /absolute/path/to/file.md
 ```
 
-The version should be `0.1.13-basis.1`. The package is named
+The version should be `0.1.14-basis.1`. The package is named
 `@alexandrbasis/roughdraft`; the executable remains `roughdraft`. Installing it
 globally shares the executable name with the original package.
 The unscoped npm package `roughdraft` installs the original upstream version.
@@ -138,11 +138,16 @@ The MCP server exposes tools to read the review index, list pending feedback, wa
 One detached server serves reviews from different folders. Concurrent CLI starts
 share a startup lock. Registered documents keep stable routes and appear on the
 homepage with pending/completed status and a live count of waiting agents.
-Opening the same file through the CLI begins another review at the same address;
-viewing or reloading its link does not change its completion status.
+Opening a completed file through the CLI begins another review round at the same address.
+Parallel opens of a pending file join the current round. Viewing or reloading its link does not change its completion status.
 
-The local server stores review registrations and completion events under
-`~/.roughdraft/`. CLI and MCP waits reconnect after transport failures; local
+The local server stores registrations, review rounds, completion events, agent
+acknowledgements, snapshots, and server drafts in `~/.roughdraft/roughdraft.sqlite`.
+The first start imports the older JSON registry and event journal in one
+transaction. Their original files remain unchanged as migration backups and are
+not read again once the import succeeds. Corrupt input stops migration with an
+error; it is never silently replaced with an empty database.
+CLI and MCP waits reconnect after transport failures; local
 waiters restart a stopped server and retain their event cursor. An explicit
 `--timeout` remains the total waiting deadline. Completion history is retained
 until you remove the state directory. Saved feedback also stays in Markdown.
@@ -184,8 +189,56 @@ Pending editor changes are saved in browser storage before autosave. After a
 reload, the editor offers recovery; if the file changed on disk, both versions
 are preserved for an explicit choice. Saving is serialized per document, and a
 failed write or unavailable browser storage remains visibly unsaved. Browser
-drafts belong to that browser profile and origin; clearing its storage removes
-them. Review events already lost by older server versions cannot be reconstructed.
+drafts belong to that browser profile and origin. New local servers also retain
+a server copy, which another browser can explicitly recover. The editor shows
+when that copy fails; changes made while disconnected depend on the local browser
+copy until synchronization succeeds. Clearing browser storage removes that local
+copy. Review events already lost by older versions cannot be reconstructed.
+
+## Review history and recovery
+
+Expand **History** beside a document in the review inbox to inspect rounds,
+agent acknowledgements, and saved snapshots. Snapshot restore requires an explicit
+selection and checks the current file version before replacing it. An external
+edit after preview produces a conflict instead of being overwritten.
+
+Agents can inspect history and confirm that they processed a completion event:
+
+```bash
+roughdraft history /absolute/path/to/draft.md --json
+roughdraft ack 42 --consumer-id agent-example --json
+```
+
+Use the event sequence and consumer ID returned by your watch result in place of
+`42` and `agent-example`. Watching acknowledges receipt on capable servers;
+`ack` marks processing only when the agent explicitly calls it after handling the
+feedback. `--received` records receipt without claiming processing. These are
+separate states; a successful HTTP response is not proof that an agent applied
+requested edits.
+
+Markdown remains the editable source in your project. Existing-file saves stage
+and sync a replacement before renaming it into place. SQLite retains previous and
+proposed content and a write intent: after a restart, an applied file can finish
+its pending completion transaction; an unrelated external edit is preserved and
+reported as a conflict. Filesystem writes and SQLite are not a single transaction.
+Concurrent external writers still require version checks; snapshots provide a
+recovery path rather than a promise of lossless simultaneous editing.
+
+MCP reply/resolve and remote CLI saves also replace existing files atomically and
+keep content-addressed backups in `~/.roughdraft/markdown-backups/` (or the
+configured state directory). These direct/offline writes and edits by other
+programs do not automatically create server history entries.
+
+The database uses SQLite WAL with `synchronous=FULL`. It uses the built-in
+[`node:sqlite`](https://nodejs.org/download/release/v22.13.1/docs/api/sqlite.html)
+API (experimental in Node 22), avoiding an extra database service or native npm
+install script. Keep the database on local disk. To back it up manually, stop
+Roughdraft and copy the entire state directory; a running WAL database must be
+backed up through SQLite's [backup API](https://sqlite.org/backup.html), not by
+copying only the `.sqlite` file. See [WAL durability](https://sqlite.org/wal.html).
+Snapshots and history currently have no automatic expiration. Original JSON
+migration backups contain only the pre-migration state; downgrading does not
+convert newer SQLite data back into those files.
 
 HTTP custom names do not expose all secure-context browser APIs. Copy uses a
 fallback where supported; use Ctrl+V or Cmd+V for paste. See the
@@ -272,6 +325,8 @@ start              Start or reuse the background server
 status             Show server status
 stop               Stop the managed background server
 watch <path>       Wait for a Done Reviewing event
+history <path>     Show rounds, acknowledgements and snapshots
+ack <sequence>     Explicitly mark feedback processed (--received for receipt)
 mcp                Start the experimental stdio MCP server
 doctor [path]      Diagnose setup or validate Markdown
 help agent         Print the agent setup prompt

@@ -394,8 +394,12 @@ async function main() {
       },
     );
     assert.equal(completedRecords.length, 8);
-    await fs.access(path.join(stateDir, "review-registry.json"));
-    await fs.access(path.join(stateDir, "review-events.json"));
+    const sqliteHeader = (
+      await fs.readFile(path.join(stateDir, "roughdraft.sqlite"))
+    )
+      .subarray(0, 16)
+      .toString();
+    assert.equal(sqliteHeader, "SQLite format 3\0");
 
     const restartFixture = fixtures[8];
     const restartOpenArgs = [

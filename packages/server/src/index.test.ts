@@ -609,6 +609,9 @@ describe("createApp", () => {
       stateless: true,
       capabilities: {
         reviewRegistry: true,
+        reviewHistory: true,
+        reviewAcknowledgements: true,
+        serverDrafts: true,
         durableReviewEvents: false,
         projectPathRequired: true,
         fileSystemBrowsing: true,

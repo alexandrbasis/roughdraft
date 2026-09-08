@@ -8,7 +8,15 @@ import {
 } from "@roughdraft/rfm";
 import { waitForReviewEvents } from "./review-events-watch.js";
 import { runtimeStateDirectory } from "./local-domain.js";
-import { ReviewRegistry } from "./review-registry.js";
+import { writeMarkdownAtomically } from "./atomic-markdown.js";
+import {
+  acknowledgeReceivedReviews,
+  acknowledgeReviewEvent,
+  getReviewHistory,
+  reviewConsumerId,
+  validateConsumerId,
+  validateReviewSequence,
+} from "./cli.js";
 
 interface JsonRpcRequest {
   jsonrpc?: "2.0";
@@ -70,9 +78,39 @@ const tools: ToolDefinition[] = [
     },
   },
   {
+    name: "roughdraft_get_review_history",
+    description:
+      "Return stored review rounds, snapshots, and delivery acknowledgements for a document path, including documents no longer on disk.",
+    inputSchema: {
+      type: "object",
+      additionalProperties: false,
+      required: ["documentPath"],
+      properties: { documentPath: { type: "string" } },
+    },
+  },
+  {
+    name: "roughdraft_ack_review_event",
+    description:
+      "Explicitly acknowledge one delivered review event for a consumer. Defaults to processed; use received to record receipt only. Never call processed until feedback has been processed.",
+    inputSchema: {
+      type: "object",
+      additionalProperties: false,
+      required: ["sequence", "consumerId"],
+      properties: {
+        sequence: { type: "integer", minimum: 1 },
+        consumerId: { type: "string" },
+        status: {
+          type: "string",
+          enum: ["received", "processed"],
+          default: "processed",
+        },
+      },
+    },
+  },
+  {
     name: "roughdraft_watch_review_events",
     description:
-      "Block until Roughdraft receives Done Reviewing for a Markdown file. Overall handoff comments are persisted as document-level YAML endmatter comments before the event is emitted. Omit timeoutSeconds to wait indefinitely.",
+      "Block until Roughdraft receives Done Reviewing for a Markdown file. Overall handoff comments are persisted as document-level YAML endmatter comments before the event is emitted. Omit timeoutSeconds to wait indefinitely. On capable servers, record received only and return consumerId for a later explicit processed acknowledgement. consumerId defaults to ROUGHDRAFT_CONSUMER_ID or a new ID per call.",
     inputSchema: {
       type: "object",
       additionalProperties: false,
@@ -80,6 +118,7 @@ const tools: ToolDefinition[] = [
       properties: {
         documentPath: { type: "string" },
         projectPath: { type: "string" },
+        consumerId: { type: "string" },
         timeoutSeconds: { type: "number" },
         batchWindowSeconds: { type: "number" },
       },
@@ -88,7 +127,7 @@ const tools: ToolDefinition[] = [
   {
     name: "roughdraft_reply_to_comment",
     description:
-      "Append a CriticMarkup reply to one existing comment or suggestion id in a local Markdown file.",
+      "Append a CriticMarkup reply to one existing comment or suggestion id in a local Markdown file. Saves atomically with a backup and rejects conflicting local edits. Offline and external edits do not automatically enter server review history.",
     inputSchema: {
       type: "object",
       additionalProperties: false,
@@ -104,7 +143,7 @@ const tools: ToolDefinition[] = [
   {
     name: "roughdraft_mark_resolved",
     description:
-      "Mark one CriticMarkup comment or suggestion as resolved using canonical RFM metadata.",
+      "Mark one CriticMarkup comment or suggestion as resolved using canonical RFM metadata. Saves atomically with a backup and rejects conflicting local edits. Offline and external edits do not automatically enter server review history.",
     inputSchema: {
       type: "object",
       additionalProperties: false,
@@ -239,10 +278,59 @@ export async function callTool(
   fetchImpl: typeof fetch,
 ): Promise<unknown> {
   if (name === "roughdraft_get_open_documents") {
-    const registry = new ReviewRegistry(
-      path.join(runtimeStateDirectory(env), "review-registry.json"),
+    const server = readServerState(env);
+    if (server) {
+      let response: Response | undefined;
+      try {
+        response = await fetchImpl(new URL("/api/reviews", server.url), {
+          signal: AbortSignal.timeout(5_000),
+        });
+      } catch {
+        // A stale server state file must not hide the durable offline registry.
+      }
+      if (response && response.status !== 404) {
+        if (!response.ok)
+          throw new Error(
+            `Roughdraft review registry failed (HTTP ${response.status}).`,
+          );
+        const documents: unknown = await response.json();
+        if (!Array.isArray(documents))
+          throw new Error("Invalid review registry response.");
+        return { documents };
+      }
+    }
+    const { readStoredReviewRecords } = await import("./review-database.js");
+    return { documents: readStoredReviewRecords(runtimeStateDirectory(env)) };
+  }
+
+  if (name === "roughdraft_get_review_history") {
+    const documentPath = path.resolve(requireString(args, "documentPath"));
+    const server = readServerState(env);
+    if (!server)
+      throw new Error(
+        "Roughdraft is not running. Start it before requesting review history.",
+      );
+    return getReviewHistory(fetchImpl, server.url, documentPath);
+  }
+
+  if (name === "roughdraft_ack_review_event") {
+    const sequence = validateReviewSequence(args.sequence);
+    const consumerId = validateConsumerId(args.consumerId);
+    const status = args.status === undefined ? "processed" : args.status;
+    if (status !== "received" && status !== "processed")
+      throw new Error("status must be received or processed.");
+    const server = readServerState(env);
+    if (!server)
+      throw new Error(
+        "Roughdraft is not running. Start it before acknowledging an event.",
+      );
+    return acknowledgeReviewEvent(
+      fetchImpl,
+      server.url,
+      sequence,
+      consumerId,
+      status,
     );
-    return { documents: registry.list() };
   }
 
   if (name === "roughdraft_get_review_index") {
@@ -267,6 +355,7 @@ export async function callTool(
   }
 
   if (name === "roughdraft_watch_review_events") {
+    const consumerId = reviewConsumerId(args.consumerId, env);
     const documentPath = requireDocumentPath(args);
     const projectPath =
       typeof args.projectPath === "string"
@@ -277,7 +366,8 @@ export async function callTool(
       throw new Error("Roughdraft is not running. Start it before watching.");
     }
 
-    return waitForReviewEvents({
+    let serverUrl = server.url;
+    const payload = await waitForReviewEvents({
       fetchImpl,
       fromNow: true,
       request: {
@@ -301,9 +391,16 @@ export async function callTool(
           createCliDependencies({ env, fetchImpl }),
           { projectDir: projectPath },
         );
+        serverUrl = recovered.server.url;
         return new URL("/api/review-events/watch", recovered.server.url);
       },
     });
+    return acknowledgeReceivedReviews(
+      fetchImpl,
+      serverUrl,
+      payload,
+      consumerId,
+    );
   }
 
   if (name === "roughdraft_reply_to_comment") {
@@ -316,8 +413,14 @@ export async function callTool(
       message,
       author: typeof args.author === "string" ? args.author : "AI",
     });
-    fs.writeFileSync(documentPath, updated);
-    return { ok: true, documentPath };
+    const { backupPath } = writeMarkdownAtomically(documentPath, updated, {
+      expectedContent: markdown,
+      backupDirectory: path.join(
+        runtimeStateDirectory(env),
+        "markdown-backups",
+      ),
+    });
+    return { ok: true, documentPath, backupPath, historyRecorded: false };
   }
 
   if (name === "roughdraft_mark_resolved") {
@@ -328,8 +431,14 @@ export async function callTool(
       targetId,
       summary: typeof args.summary === "string" ? args.summary : undefined,
     });
-    fs.writeFileSync(documentPath, updated);
-    return { ok: true, documentPath };
+    const { backupPath } = writeMarkdownAtomically(documentPath, updated, {
+      expectedContent: markdown,
+      backupDirectory: path.join(
+        runtimeStateDirectory(env),
+        "markdown-backups",
+      ),
+    });
+    return { ok: true, documentPath, backupPath, historyRecorded: false };
   }
 
   throw new Error(`Unknown tool: ${name}`);

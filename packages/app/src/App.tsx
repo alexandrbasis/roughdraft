@@ -310,9 +310,11 @@ function getHomepageWorkflowDocumentScale(element: HTMLElement | null) {
 export function Homepage({
   message,
   updateStatus,
+  reviewHistorySupported = false,
 }: {
   message: ReactNode;
   updateStatus: UpdateStatus | null;
+  reviewHistorySupported?: boolean;
 }) {
   const [copyState, setCopyState] = useState<"idle" | "copied" | "error">(
     "idle",
@@ -408,7 +410,7 @@ export function Homepage({
         </div>
       ) : null}
       <div className="w-full">
-        <ReviewHome />
+        <ReviewHome reviewHistorySupported={reviewHistorySupported} />
         <div className="font-die-grotesk-a mx-auto max-w-[1500px] text-left">
           <p
             className="text-[clamp(1.125rem,0.9rem+0.35vw,1.375rem)] font-bold text-stone-500 dark:text-stone-500"
@@ -1974,6 +1976,10 @@ export function App() {
       <Homepage
         message={loadError ?? <HomepageSubtitle />}
         updateStatus={updateStatus}
+        reviewHistorySupported={
+          backend?.info.kind === "local-files" &&
+          backend.info.capabilities?.reviewHistory === true
+        }
       />
     );
   }

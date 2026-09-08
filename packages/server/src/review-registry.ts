@@ -27,10 +27,16 @@ export interface ReviewRegisterOptions {
 }
 
 export interface ReviewRegistryOptions {
+  persistence?: ReviewRegistryPersistence;
   storePath?: string | null;
   stateDir?: string;
   memory?: boolean;
   now?: () => Date;
+}
+
+export interface ReviewRegistryPersistence {
+  listRecords(): ReviewRecord[];
+  saveRecord(record: ReviewRecord, opening: boolean): void;
 }
 
 interface PersistedRegistry {
@@ -225,6 +231,7 @@ export class ReviewRegistry {
 
   private readonly now: () => Date;
   private records: ReviewRecord[];
+  private readonly persistence?: ReviewRegistryPersistence;
 
   constructor(storePath?: string | null);
   constructor(options?: ReviewRegistryOptions);
@@ -233,8 +240,11 @@ export class ReviewRegistry {
       typeof input === "string" || input === null
         ? { storePath: input }
         : input;
+    this.persistence = options.persistence;
     this.storePath =
-      options.memory === true || options.storePath === null
+      options.persistence ||
+      options.memory === true ||
+      options.storePath === null
         ? null
         : path.resolve(
             options.storePath ??
@@ -243,14 +253,16 @@ export class ReviewRegistry {
                 : defaultStorePath()),
           );
     this.now = options.now ?? (() => new Date());
-    this.records = this.readRecords();
+    this.records = this.persistence?.listRecords() ?? this.readRecords();
   }
 
   list(): ReviewRecord[] {
+    if (this.persistence) this.records = this.persistence.listRecords();
     return this.records.map(cloneRecord);
   }
 
   getByRoute(route: string): ReviewRecord | null {
+    if (this.persistence) this.records = this.persistence.listRecords();
     const normalizedRoute = validateReviewRoute(route);
     const record = this.records.find(
       (candidate) => candidate.route === normalizedRoute,
@@ -259,6 +271,7 @@ export class ReviewRegistry {
   }
 
   getByDocumentPath(documentPath: string): ReviewRecord | null {
+    if (this.persistence) this.records = this.persistence.listRecords();
     const canonicalPath = canonicalDocumentPath(documentPath);
     const record = this.records.find(
       (candidate) => candidate.documentPath === canonicalPath,
@@ -270,6 +283,7 @@ export class ReviewRegistry {
     documentPath: string,
     overrides: ReviewRegisterOptions = {},
   ): ReviewRecord {
+    if (this.persistence) this.records = this.persistence.listRecords();
     const canonicalPath = canonicalDocumentPath(documentPath);
     const existing = this.records.find(
       (record) => record.documentPath === canonicalPath,
@@ -284,7 +298,7 @@ export class ReviewRegistry {
       delete existing.completedAt;
       delete existing.completionEvent;
       try {
-        this.persist();
+        this.persist(existing, true);
       } catch (error) {
         this.records = this.records.map((record) =>
           record.id === existing.id ? previous : record,
@@ -319,7 +333,7 @@ export class ReviewRegistry {
 
     this.records.push(record);
     try {
-      this.persist();
+      this.persist(record, true);
     } catch (error) {
       this.records = this.records.filter((candidate) => candidate !== record);
       throw error;
@@ -342,7 +356,7 @@ export class ReviewRegistry {
     delete existing.completedAt;
     delete existing.completionEvent;
     try {
-      this.persist();
+      this.persist(existing, true);
     } catch (error) {
       this.records = this.records.map((candidate) =>
         candidate.id === existing.id ? previous : candidate,
@@ -353,6 +367,7 @@ export class ReviewRegistry {
   }
 
   complete(documentPath: string, event?: unknown): ReviewRecord | null {
+    if (this.persistence) this.records = this.persistence.listRecords();
     const canonicalPath = canonicalDocumentPath(documentPath);
     const record = this.records.find(
       (candidate) => candidate.documentPath === canonicalPath,
@@ -365,7 +380,7 @@ export class ReviewRegistry {
     if (event !== undefined) record.completionEvent = event;
     else delete record.completionEvent;
     try {
-      this.persist();
+      this.persist(record, false);
     } catch (error) {
       this.records = this.records.map((candidate) =>
         candidate.id === record.id ? previous : candidate,
@@ -422,7 +437,11 @@ export class ReviewRegistry {
     });
   }
 
-  private persist(): void {
+  private persist(record: ReviewRecord, opening: boolean): void {
+    if (this.persistence) {
+      this.persistence.saveRecord(record, opening);
+      return;
+    }
     if (!this.storePath) return;
     fs.mkdirSync(path.dirname(this.storePath), { recursive: true });
     const temporaryPath = `${this.storePath}.${process.pid}.${Date.now()}.tmp`;
