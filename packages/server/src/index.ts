@@ -90,6 +90,13 @@ interface OpenRequestClient {
   response: Response;
 }
 
+interface PollingOpenRequestClient {
+  id: number;
+  path: string | null;
+  expiresAt: number;
+  urls: string[];
+}
+
 interface OpenRequestPayload {
   path?: string;
   url?: string;
@@ -415,6 +422,28 @@ export function createApp(options: CreateAppOptions = {}): CreateAppResult {
       : null;
   const app = express();
   const openRequestClients = new Set<OpenRequestClient>();
+  const pollingOpenRequestClients = new Map<string, PollingOpenRequestClient>();
+  const openRequestLeaseMs = 15_000;
+
+  function prunePollingOpenRequestClients(): void {
+    const now = Date.now();
+    for (const [clientId, client] of pollingOpenRequestClients) {
+      if (client.expiresAt <= now) pollingOpenRequestClients.delete(clientId);
+    }
+  }
+
+  function pollingClientId(req: Request, res: Response): string | null {
+    const clientId =
+      typeof req.query.clientId === "string" ? req.query.clientId.trim() : "";
+    if (!clientId || clientId.length > 128) {
+      res
+        .status(400)
+        .json({ error: "clientId must contain 1 to 128 characters" });
+      return null;
+    }
+    return clientId;
+  }
+
   const reviewDatabase = new ReviewDatabase(options.stateDirectory);
   const reviewEvents = new ReviewEventQueue(reviewDatabase);
   const reviewRegistry = new ReviewRegistry({ persistence: reviewDatabase });
@@ -614,6 +643,29 @@ export function createApp(options: CreateAppOptions = {}): CreateAppResult {
 
     if (!absolutePath?.toLowerCase().endsWith(".md")) {
       res.status(404).json({ error: "Markdown file not found" });
+      return;
+    }
+
+    if (req.query.poll === "1") {
+      res.setHeader("Cache-Control", "no-store");
+      try {
+        res.json({
+          path: relativePath,
+          exists: true,
+          version: fileVersionFromFile(absolutePath),
+        });
+      } catch (error) {
+        const code = (error as NodeJS.ErrnoException)?.code;
+        if (code === "ENOENT") {
+          res.json({ path: relativePath, exists: false, version: null });
+        } else {
+          res.status(500).json({
+            path: relativePath,
+            error: "Unable to read Markdown file",
+            code: code ?? "UNKNOWN",
+          });
+        }
+      }
       return;
     }
 
@@ -954,10 +1006,34 @@ export function createApp(options: CreateAppOptions = {}): CreateAppResult {
   });
 
   app.get("/api/open-requests", (req, res) => {
+    prunePollingOpenRequestClients();
     const requestedPath =
       typeof req.query.path === "string" && req.query.path.trim().length > 0
         ? req.query.path.trim()
         : null;
+    if (req.query.poll === "1") {
+      const clientId = pollingClientId(req, res);
+      if (!clientId) return;
+      let client = pollingOpenRequestClients.get(clientId);
+      if (!client) {
+        client = {
+          id: nextOpenRequestClientId++,
+          path: requestedPath,
+          expiresAt: Date.now() + openRequestLeaseMs,
+          urls: [],
+        };
+        pollingOpenRequestClients.set(clientId, client);
+      } else {
+        if (client.path !== requestedPath) client.urls = [];
+        client.path = requestedPath;
+        client.expiresAt = Date.now() + openRequestLeaseMs;
+      }
+      const url = client.urls.shift();
+      res.setHeader("Cache-Control", "no-store");
+      res.json(url === undefined ? {} : { url });
+      return;
+    }
+
     const client: OpenRequestClient = {
       id: nextOpenRequestClientId,
       path: requestedPath,
@@ -984,7 +1060,16 @@ export function createApp(options: CreateAppOptions = {}): CreateAppResult {
     });
   });
 
+  app.delete("/api/open-requests", (req, res) => {
+    prunePollingOpenRequestClients();
+    const clientId = pollingClientId(req, res);
+    if (!clientId) return;
+    pollingOpenRequestClients.delete(clientId);
+    res.json({});
+  });
+
   app.post("/api/open-request", (req, res) => {
+    prunePollingOpenRequestClients();
     const payload = req.body as OpenRequestPayload;
     const targetPath =
       typeof payload.path === "string" && payload.path.trim().length > 0
@@ -1000,8 +1085,11 @@ export function createApp(options: CreateAppOptions = {}): CreateAppResult {
       return;
     }
 
-    const matchingClient = Array.from(openRequestClients)
-      .reverse()
+    const matchingClient = [
+      ...openRequestClients,
+      ...pollingOpenRequestClients.values(),
+    ]
+      .sort((left, right) => right.id - left.id)
       .find((client) => client.path === targetPath);
 
     if (!matchingClient) {
@@ -1009,12 +1097,16 @@ export function createApp(options: CreateAppOptions = {}): CreateAppResult {
       return;
     }
 
-    matchingClient.response.write(
-      `event: open-request\ndata: ${JSON.stringify({
-        path: targetPath,
-        url: targetUrl,
-      })}\n\n`,
-    );
+    if ("response" in matchingClient) {
+      matchingClient.response.write(
+        `event: open-request\ndata: ${JSON.stringify({
+          path: targetPath,
+          url: targetUrl,
+        })}\n\n`,
+      );
+    } else {
+      matchingClient.urls.push(targetUrl);
+    }
     res.json({ delivered: true });
   });
 

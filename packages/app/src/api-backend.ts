@@ -1,3 +1,4 @@
+import { pollJson } from "./poll-json";
 import {
   type BackendInfo,
   type CompleteReviewOptions,
@@ -64,6 +65,7 @@ export class ApiBackend implements StorageBackend {
       this.buildUrl("/api/markdown-file", { path: relativePath }),
       {
         method: "PUT",
+        signal: AbortSignal.timeout(15_000),
         headers: { "Content-Type": "application/json" },
         body: JSON.stringify({
           content,
@@ -90,25 +92,19 @@ export class ApiBackend implements StorageBackend {
     relativePath: string,
     onChange: (event: MarkdownFileChangeEvent) => void,
   ): () => void {
-    const source = new EventSource(
-      this.buildUrl("/api/markdown-file/events", { path: relativePath }),
+    let previous: string | undefined;
+    return pollJson<MarkdownFileChangeEvent>(
+      this.buildUrl("/api/markdown-file/events", {
+        path: relativePath,
+        poll: "1",
+      }),
+      (event) => {
+        const signature = JSON.stringify(event);
+        if (signature === previous) return;
+        previous = signature;
+        onChange(event);
+      },
     );
-
-    source.addEventListener("change", (event) => {
-      try {
-        onChange(JSON.parse((event as MessageEvent<string>).data));
-      } catch (error) {
-        console.error("Failed to read markdown file change event:", error);
-      }
-    });
-
-    source.onerror = (error) => {
-      console.error("Markdown file event stream failed:", error);
-    };
-
-    return () => {
-      source.close();
-    };
   }
 
   async completeReview(
@@ -120,6 +116,7 @@ export class ApiBackend implements StorageBackend {
       this.buildUrl("/api/review-events", { path: relativePath }),
       {
         method: "POST",
+        signal: AbortSignal.timeout(15_000),
         headers: { "Content-Type": "application/json" },
         body: JSON.stringify({
           projectPath: this.info.projectPath,

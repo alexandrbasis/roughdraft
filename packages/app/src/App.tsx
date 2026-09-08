@@ -1,4 +1,5 @@
 import packageManifest from "../../../package.json";
+import { pollJson } from "./poll-json";
 import { agentSetupPrompt } from "../../server/release-info.mjs";
 import {
   ArrowLeft,
@@ -1562,36 +1563,50 @@ export function App() {
 
   useEffect(() => {
     const sourceUrl = new URL("/api/open-requests", window.location.origin);
+    const clientId = `${Date.now().toString(36)}-${Math.random().toString(36).slice(2)}`;
+    sourceUrl.searchParams.set("poll", "1");
+    sourceUrl.searchParams.set("clientId", clientId);
     if (requestedPathState.rawPath) {
       sourceUrl.searchParams.set("path", requestedPathState.rawPath);
     }
 
-    const source = new EventSource(`${sourceUrl.pathname}${sourceUrl.search}`);
-    const handleOpenRequest = (event: Event) => {
-      try {
-        const payload = JSON.parse((event as MessageEvent<string>).data) as {
-          url?: unknown;
-        };
-        if (typeof payload.url !== "string" || !payload.url.trim()) return;
+    const stopPolling = pollJson<{ url?: unknown }>(
+      `${sourceUrl.pathname}${sourceUrl.search}`,
+      (payload) => {
+        try {
+          if (typeof payload.url !== "string" || !payload.url.trim()) return;
 
-        const nextUrl = new URL(payload.url, window.location.origin);
-        if (new URLSearchParams(window.location.search).get("embed") === "1") {
-          nextUrl.searchParams.set("embed", "1");
+          const nextUrl = new URL(payload.url, window.location.origin);
+          if (
+            new URLSearchParams(window.location.search).get("embed") === "1"
+          ) {
+            nextUrl.searchParams.set("embed", "1");
+          }
+          window.focus();
+          if (nextUrl.href !== window.location.href) {
+            window.location.assign(nextUrl.href);
+          }
+        } catch (error) {
+          console.error("Failed to handle Roughdraft open request:", error);
         }
-        window.focus();
-        if (nextUrl.href !== window.location.href) {
-          window.location.assign(nextUrl.href);
-        }
-      } catch (error) {
-        console.error("Failed to handle Roughdraft open request:", error);
-      }
+      },
+    );
+
+    const unregister = () => {
+      void fetch(
+        `/api/open-requests?clientId=${encodeURIComponent(clientId)}`,
+        {
+          method: "DELETE",
+          keepalive: true,
+          signal: AbortSignal.timeout(5_000),
+        },
+      ).catch(() => {});
     };
-
-    source.addEventListener("open-request", handleOpenRequest);
-
+    window.addEventListener("pagehide", unregister);
     return () => {
-      source.removeEventListener("open-request", handleOpenRequest);
-      source.close();
+      stopPolling();
+      window.removeEventListener("pagehide", unregister);
+      unregister();
     };
   }, [requestedPathState.rawPath]);
 

@@ -1,6 +1,6 @@
 {
   "name": "@alexandrbasis/roughdraft",
-  "version": "0.1.14-basis.2",
+  "version": "0.1.14-basis.3",
   "description": "A local markdown review app",
   "license": "MIT",
   "engines": {
@@ -36,7 +36,7 @@
     "release:prepare": "node scripts/prepare-release.mjs",
     "test:tooling": "node --test scripts/*.test.mjs",
     "upstream:check": "node scripts/check-upstream.mjs",
-    "test:review": "playwright test --config packages/app/playwright.config.ts markdown-preservation.spec.ts review-accessibility.spec.ts endmatter-replies.spec.ts embed-mode.spec.ts review-routes.spec.ts draft-recovery.spec.ts review-history.spec.ts review-inbox.spec.ts",
+    "test:review": "playwright test --config packages/app/playwright.config.ts markdown-preservation.spec.ts review-accessibility.spec.ts endmatter-replies.spec.ts embed-mode.spec.ts review-routes.spec.ts draft-recovery.spec.ts review-history.spec.ts review-inbox.spec.ts review-handoff-connections.spec.ts",
     "test:durable": "node scripts/test-durable-reviews.mjs"
   },
   "files": [

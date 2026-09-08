@@ -9,12 +9,12 @@ license and stores comments and suggestions in the Markdown file.
 Use Node.js 22.13 or newer. Install the built package from this fork's GitHub release:
 
 ```bash
-npm install -g https://github.com/alexandrbasis/roughdraft/releases/download/v0.1.14-basis.2/alexandrbasis-roughdraft-0.1.14-basis.2.tgz
+npm install -g https://github.com/alexandrbasis/roughdraft/releases/download/v0.1.14-basis.3/alexandrbasis-roughdraft-0.1.14-basis.3.tgz
 roughdraft --version
 roughdraft open /absolute/path/to/file.md
 ```
 
-The version should be `0.1.14-basis.2`. The package is named
+The version should be `0.1.14-basis.3`. The package is named
 `@alexandrbasis/roughdraft`; the executable remains `roughdraft`. Installing it
 globally shares the executable name with the original package.
 The unscoped npm package `roughdraft` installs the original upstream version.
@@ -199,6 +199,12 @@ The review inbox shows ten records per page. Use All, Waiting, or Reviewed to
 filter the list; each filter shows its total count. The selected filter and page
 are kept in the URL and survive a reload. Changing a filter returns to page one;
 if a refresh removes the last page, the inbox shows the nearest remaining page.
+
+Local review tabs use short background requests for file changes and CLI open
+requests, normally about once per second. They do not reserve HTTP/1 connections,
+so several open tabs can still save and send reviews. Failed background requests
+retry with a delay. Local save and completion requests time out after 15 seconds
+and show the existing retry state instead of waiting indefinitely.
 
 ## Review history and recovery
 
