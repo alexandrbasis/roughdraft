@@ -31,6 +31,9 @@ jobs:
       - name: Verify packed CLI installation
         run: pnpm test:package
 
+      - name: Verify parallel reviews and server recovery
+        run: pnpm test:durable
+
       - name: Install Playwright Chromium
         run: pnpm exec playwright install --with-deps chromium
 

@@ -427,7 +427,7 @@ describe("createApp", () => {
       });
 
     expect(emitted.body.delivered).toBe(false);
-    expect(watchResponse.status).toBe(200);
+    expect(watchResponse.status, JSON.stringify(watchResponse.body)).toBe(200);
     expect(watchResponse.body).toMatchObject({
       timedOut: false,
       events: [
@@ -569,7 +569,9 @@ describe("createApp", () => {
       expect(readResponse.body).toEqual({ error: "Page not found" });
       expect(updateResponse.status).toBe(404);
       expect(updateResponse.body).toEqual({ error: "Page not found" });
-      expect(deleteResponse.status).toBe(404);
+      expect(deleteResponse.status, JSON.stringify(deleteResponse.body)).toBe(
+        404,
+      );
       expect(deleteResponse.body).toEqual({ error: "Page not found" });
       expect(fs.readFileSync(outsideFilePath, "utf-8")).toBe("# Secret\n");
     } finally {
@@ -606,6 +608,8 @@ describe("createApp", () => {
       serverRoot,
       stateless: true,
       capabilities: {
+        reviewRegistry: true,
+        durableReviewEvents: false,
         projectPathRequired: true,
         fileSystemBrowsing: true,
         remoteDocuments: true,

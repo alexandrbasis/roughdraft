@@ -246,6 +246,88 @@ describe("cli", () => {
     expect(typeof persisted.startedAt).toBe("string");
   });
 
+  it("serializes concurrent startup attempts through one state file", async () => {
+    const logs: string[] = [];
+    const errors: string[] = [];
+    const runningPids = new Set<number>();
+    const startupPort = 49317;
+    let spawnCount = 0;
+    let spawnedEnv: NodeJS.ProcessEnv | undefined;
+
+    const deps = createCliDependencies({
+      env: {
+        ...process.env,
+        ROUGHDRAFT_STATE_DIR: stateDir,
+      },
+      cwd: projectDir,
+      fetchImpl: async (input) => {
+        const url =
+          input instanceof URL
+            ? input
+            : new URL(
+                typeof input === "string" ? input : input.url,
+                "http://localhost",
+              );
+
+        if (url.pathname !== "/api/status") {
+          throw new Error(`Unexpected request: ${url.toString()}`);
+        }
+
+        if (spawnCount === 0) {
+          await new Promise((resolve) => setTimeout(resolve, 25));
+          throw new Error("connect ECONNREFUSED");
+        }
+
+        return new Response(
+          JSON.stringify({
+            backend: "local-files",
+            port: startupPort,
+            projectDir,
+            serverRoot,
+          }),
+          {
+            status: 200,
+            headers: { "Content-Type": "application/json" },
+          },
+        );
+      },
+      findAvailablePortImpl: async () => startupPort,
+      spawnServerProcess: async ({ env }) => {
+        spawnCount += 1;
+        spawnedEnv = env;
+        const pid = 7000 + spawnCount;
+        runningPids.add(pid);
+        return { pid };
+      },
+      isProcessRunning: (pid) => runningPids.has(pid),
+      stopProcess: async (pid) => {
+        runningPids.delete(pid);
+      },
+      openUrl: () => "disabled",
+      resolveUpdateStatus: noUpdateStatus,
+      log: (message) => logs.push(message),
+      error: (message) => errors.push(message),
+    });
+
+    const results = await Promise.all([
+      ensureServerRunning(deps, { projectDir }),
+      ensureServerRunning(deps, { projectDir }),
+    ]);
+
+    expect(results.filter((result) => !result.reused)).toHaveLength(1);
+    expect(results.filter((result) => result.reused)).toHaveLength(1);
+    expect(spawnCount).toBe(1);
+    expect(spawnedEnv?.ROUGHDRAFT_STATE_DIR).toBe(stateDir);
+    expect(errors).toEqual([]);
+    expect(logs).toEqual([]);
+
+    const persisted = JSON.parse(
+      fs.readFileSync(getServerStateFilePath(deps.env), "utf8"),
+    ) as { port: number; pid: number };
+    expect(persisted).toMatchObject({ port: startupPort, pid: 7001 });
+    expect(fs.readdirSync(stateDir)).toEqual(["server.json"]);
+  });
+
   it("auto-starts from open and opens the requested markdown file URL", async () => {
     const test = createTestDependencies();
     const documentPath = path.join(projectDir, "draft.md");

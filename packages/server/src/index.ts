@@ -16,6 +16,9 @@ import {
   resolveBindHosts,
 } from "./network.js";
 import { ReviewEventQueue } from "./review-events.js";
+import { ReviewRegistry } from "./review-registry.js";
+import { installReviewRoutes } from "./review-routes.js";
+import { runtimeStateDirectory } from "./local-domain.js";
 import { resolveUpdateStatus } from "./update-status.js";
 
 const __dirname = path.dirname(fileURLToPath(import.meta.url));
@@ -58,6 +61,7 @@ interface ProjectTreeListing {
 }
 
 interface CreateAppOptions {
+  stateDirectory?: string;
   port?: number;
   projectDir?: string;
   serverRoot?: string;
@@ -405,7 +409,29 @@ export function createApp(options: CreateAppOptions = {}): CreateAppResult {
       : null;
   const app = express();
   const openRequestClients = new Set<OpenRequestClient>();
-  const reviewEvents = new ReviewEventQueue();
+  const reviewEvents = new ReviewEventQueue(
+    options.stateDirectory
+      ? path.join(options.stateDirectory, "review-events.json")
+      : undefined,
+  );
+  const reviewRegistry = new ReviewRegistry({
+    storePath: options.stateDirectory
+      ? path.join(options.stateDirectory, "review-registry.json")
+      : null,
+  });
+  for (const record of reviewRegistry.list()) {
+    const event = reviewEvents.latestEventForDocument(record.documentPath);
+    if (
+      record.status === "pending" &&
+      event &&
+      (record.openedAfterSequence !== undefined
+        ? event.sequence > record.openedAfterSequence
+        : Date.parse(event.createdAt) > Date.parse(record.openedAt)) &&
+      fs.existsSync(record.documentPath)
+    ) {
+      reviewRegistry.complete(record.documentPath, event);
+    }
+  }
   const remoteSessions = new Map<string, RemoteSession>();
 
   function isAuthorizedRemoteDocumentRequest(req: Request): boolean {
@@ -452,6 +478,12 @@ export function createApp(options: CreateAppOptions = {}): CreateAppResult {
   remoteSessionSweeper.unref?.();
 
   app.use(express.json({ limit: "50mb" }));
+  installReviewRoutes(
+    app,
+    reviewRegistry,
+    (documentPath) => reviewEvents.waiterCountForDocument(documentPath),
+    () => reviewEvents.latestSequence(),
+  );
 
   function requestedProjectPath(req: Request): string | null {
     const queryPath =
@@ -672,6 +704,8 @@ export function createApp(options: CreateAppOptions = {}): CreateAppResult {
       overallComment,
     });
 
+    reviewRegistry.complete(target.absolutePath, result.event);
+
     res.status(201).json(result);
   });
 
@@ -699,6 +733,15 @@ export function createApp(options: CreateAppOptions = {}): CreateAppResult {
         : 0.25;
     const afterSequence =
       typeof req.body?.afterSequence === "number" ? req.body.afterSequence : 0;
+
+    if (!fromNow && afterSequence > reviewEvents.latestSequence()) {
+      res.status(409).json({
+        error:
+          "Review history is older than this watch cursor. Reopen the review to start a new wait.",
+        code: "REVIEW_CURSOR_AHEAD",
+      });
+      return;
+    }
 
     try {
       const result = await reviewEvents.wait({
@@ -825,8 +868,13 @@ export function createApp(options: CreateAppOptions = {}): CreateAppResult {
         ? path.resolve(options.projectDir)
         : undefined,
       serverRoot,
+      stateDirectory: options.stateDirectory
+        ? path.resolve(options.stateDirectory)
+        : undefined,
       stateless: true,
       capabilities: {
+        reviewRegistry: true,
+        durableReviewEvents: Boolean(options.stateDirectory),
         projectPathRequired: true,
         fileSystemBrowsing: true,
         remoteDocuments: true,
@@ -1277,6 +1325,7 @@ export async function createServer(
   const { app } = createApp({
     port,
     projectDir,
+    stateDirectory: runtimeStateDirectory(),
     remoteDocumentToken:
       remoteDocumentToken.length > 0 ? remoteDocumentToken : undefined,
   });

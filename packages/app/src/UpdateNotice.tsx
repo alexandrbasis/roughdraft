@@ -2,6 +2,7 @@ import { useCallback, useEffect, useState } from "react";
 import { ArrowUpRight } from "lucide-react";
 import { Button } from "./components/ui/button";
 import type { UpdateStatus } from "./update-status";
+import { writeTextToClipboard } from "./clipboard";
 
 interface UpdateNoticeProps {
   updateStatus: UpdateStatus;
@@ -24,7 +25,7 @@ export function UpdateNotice({ updateStatus }: UpdateNoticeProps) {
 
   const handleUpdate = useCallback(async () => {
     try {
-      await navigator.clipboard.writeText(updateStatus.updateCommand);
+      await writeTextToClipboard(updateStatus.updateCommand);
       setCopied(true);
     } catch {
       window.open(

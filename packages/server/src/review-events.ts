@@ -1,3 +1,4 @@
+import { randomUUID } from "node:crypto";
 import fs from "node:fs";
 import path from "node:path";
 
@@ -35,6 +36,12 @@ export interface WaitForReviewEventsResult {
   nextSequence: number;
 }
 
+interface ReviewEventJournal {
+  version: 1;
+  nextSequence: number;
+  events: ReviewCompletedEvent[];
+}
+
 interface Waiter {
   options: NormalizedWaitOptions;
   resolve: (result: WaitForReviewEventsResult) => void;
@@ -58,20 +65,50 @@ export class ReviewEventQueue {
   private events: ReviewCompletedEvent[] = [];
   private waiters = new Set<Waiter>();
   private nextSequence = 1;
+  private readonly journalPath?: string;
+
+  constructor(journalPath?: string) {
+    if (journalPath === undefined) return;
+
+    if (journalPath.trim().length === 0) {
+      throw new Error("Review event journal path must not be empty.");
+    }
+
+    this.journalPath = path.resolve(journalPath);
+    const state = loadJournal(this.journalPath);
+    this.events = state.events;
+    this.nextSequence = state.nextSequence;
+  }
 
   emit(input: ReviewCompletedEventInput): {
     delivered: boolean;
     event: ReviewCompletedEvent;
   } {
+    if (this.nextSequence === Number.MAX_SAFE_INTEGER) {
+      throw new Error("Review event sequence space is exhausted.");
+    }
+
     const event: ReviewCompletedEvent = {
       ...input,
       type: "review.completed",
       sequence: this.nextSequence,
       createdAt: new Date().toISOString(),
     };
-    this.nextSequence += 1;
-    this.events.push(event);
-    this.events = this.events.slice(-MAX_RETAINED_EVENTS);
+    const nextEvents = this.journalPath
+      ? [...this.events, event]
+      : retainEvents([...this.events, event], event.projectPath);
+    const nextSequence = this.nextSequence + 1;
+
+    if (this.journalPath) {
+      persistJournal(this.journalPath, {
+        version: 1,
+        nextSequence,
+        events: nextEvents,
+      });
+    }
+
+    this.nextSequence = nextSequence;
+    this.events = nextEvents;
 
     appendSlog("review-events.emit", {
       documentPath: event.documentPath,
@@ -153,8 +190,25 @@ export class ReviewEventQueue {
     return this.nextSequence - 1;
   }
 
+  snapshot(): ReviewCompletedEvent[] {
+    return this.events.map(cloneReviewEvent);
+  }
+
+  latestEventForDocument(
+    documentPath: string,
+  ): ReviewCompletedEvent | undefined {
+    const normalizedPath = canonicalPath(documentPath);
+    for (let index = this.events.length - 1; index >= 0; index -= 1) {
+      const event = this.events[index];
+      if (event && canonicalPath(event.documentPath) === normalizedPath) {
+        return cloneReviewEvent(event);
+      }
+    }
+    return undefined;
+  }
+
   waiterCountForDocument(documentPath: string): number {
-    const normalizedPath = path.resolve(documentPath);
+    const normalizedPath = canonicalPath(documentPath);
     return [...this.waiters].filter(
       (waiter) => waiter.options.documentPath === normalizedPath,
     ).length;
@@ -199,12 +253,202 @@ export class ReviewEventQueue {
   }
 }
 
+function retainEvents(
+  events: ReviewCompletedEvent[],
+  projectPath: string,
+): ReviewCompletedEvent[] {
+  const normalizedProjectPath = canonicalPath(projectPath);
+  const projectEvents = events.filter(
+    (event) => canonicalPath(event.projectPath) === normalizedProjectPath,
+  );
+  const otherProjectEvents = events.filter(
+    (event) => canonicalPath(event.projectPath) !== normalizedProjectPath,
+  );
+
+  return [
+    ...otherProjectEvents,
+    ...projectEvents.slice(-MAX_RETAINED_EVENTS),
+  ].sort((left, right) => left.sequence - right.sequence);
+}
+
+function loadJournal(journalPath: string): ReviewEventJournal {
+  let serialized: string;
+  try {
+    serialized = fs.readFileSync(journalPath, "utf8");
+  } catch (error) {
+    if (isNodeError(error) && error.code === "ENOENT") {
+      return { version: 1, nextSequence: 1, events: [] };
+    }
+    throw journalError(journalPath, error);
+  }
+
+  let parsed: unknown;
+  try {
+    parsed = JSON.parse(serialized);
+  } catch (error) {
+    throw journalError(journalPath, error, "contains invalid JSON");
+  }
+
+  try {
+    return validateJournal(parsed);
+  } catch (error) {
+    throw journalError(
+      journalPath,
+      error,
+      error instanceof Error ? error.message : "contains invalid data",
+    );
+  }
+}
+
+function persistJournal(
+  journalPath: string,
+  journal: ReviewEventJournal,
+): void {
+  const directory = path.dirname(journalPath);
+  const temporaryPath = `${journalPath}.${process.pid}.${randomUUID()}.tmp`;
+  let fileDescriptor: number | undefined;
+
+  try {
+    fs.mkdirSync(directory, { recursive: true });
+    fileDescriptor = fs.openSync(temporaryPath, "wx", 0o600);
+    fs.writeFileSync(fileDescriptor, `${JSON.stringify(journal)}\n`, "utf8");
+    fs.fsyncSync(fileDescriptor);
+    fs.closeSync(fileDescriptor);
+    fileDescriptor = undefined;
+    fs.renameSync(temporaryPath, journalPath);
+    syncDirectory(directory);
+  } catch (error) {
+    if (fileDescriptor !== undefined) {
+      try {
+        fs.closeSync(fileDescriptor);
+      } catch {
+        // Preserve the persistence error as the actionable failure.
+      }
+    }
+    try {
+      fs.unlinkSync(temporaryPath);
+    } catch {
+      // The rename may already have completed, or cleanup may be impossible.
+    }
+    throw journalError(journalPath, error, "could not be persisted atomically");
+  }
+}
+
+function syncDirectory(directory: string): void {
+  const fileDescriptor = fs.openSync(directory, "r");
+  try {
+    fs.fsyncSync(fileDescriptor);
+  } finally {
+    fs.closeSync(fileDescriptor);
+  }
+}
+
+function validateJournal(value: unknown): ReviewEventJournal {
+  if (!isRecord(value) || value.version !== 1) {
+    throw new Error("journal version is unsupported");
+  }
+  if (!isSafePositiveInteger(value.nextSequence)) {
+    throw new Error("nextSequence must be a positive integer");
+  }
+  if (!Array.isArray(value.events)) {
+    throw new Error("events must be an array");
+  }
+
+  const events = value.events.map((event, index) =>
+    validateEvent(event, index),
+  );
+  for (let index = 1; index < events.length; index += 1) {
+    const previous = events[index - 1];
+    const current = events[index];
+    if (!previous || !current || current.sequence <= previous.sequence) {
+      throw new Error("events must be ordered by unique sequence");
+    }
+  }
+  const lastSequence = events.at(-1)?.sequence ?? 0;
+  if (value.nextSequence <= lastSequence) {
+    throw new Error("nextSequence must be greater than every event sequence");
+  }
+
+  return { version: 1, nextSequence: value.nextSequence, events };
+}
+
+function validateEvent(value: unknown, index: number): ReviewCompletedEvent {
+  if (!isRecord(value) || value.type !== "review.completed") {
+    throw new Error(`event ${index} has an invalid type`);
+  }
+  if (
+    !isNonEmptyString(value.documentPath) ||
+    !isNonEmptyString(value.projectPath) ||
+    !isNonEmptyString(value.relativePath) ||
+    !isNonEmptyString(value.version) ||
+    !isNonEmptyString(value.createdAt) ||
+    !isSafePositiveInteger(value.sequence)
+  ) {
+    throw new Error(`event ${index} has invalid identity or sequence data`);
+  }
+  if (Number.isNaN(Date.parse(value.createdAt))) {
+    throw new Error(`event ${index} has an invalid createdAt timestamp`);
+  }
+  if (!isRecord(value.summary)) {
+    throw new Error(`event ${index} has an invalid summary`);
+  }
+  for (const key of ["comments", "replies", "suggestions", "unresolved"]) {
+    if (!isNonNegativeInteger(value.summary[key])) {
+      throw new Error(`event ${index} has an invalid ${key} count`);
+    }
+  }
+  if (
+    Object.hasOwn(value, "overallComment") &&
+    value.overallComment !== undefined &&
+    typeof value.overallComment !== "string"
+  ) {
+    throw new Error(`event ${index} has an invalid overallComment`);
+  }
+
+  return value as unknown as ReviewCompletedEvent;
+}
+
+function isRecord(value: unknown): value is Record<string, unknown> {
+  return typeof value === "object" && value !== null && !Array.isArray(value);
+}
+
+function isNonEmptyString(value: unknown): value is string {
+  return typeof value === "string" && value.length > 0;
+}
+
+function isSafePositiveInteger(value: unknown): value is number {
+  return typeof value === "number" && Number.isSafeInteger(value) && value >= 1;
+}
+
+function isNonNegativeInteger(value: unknown): value is number {
+  return typeof value === "number" && Number.isSafeInteger(value) && value >= 0;
+}
+
+function isNodeError(error: unknown): error is NodeJS.ErrnoException {
+  return (
+    error instanceof Error &&
+    typeof (error as NodeJS.ErrnoException).code === "string"
+  );
+}
+
+function journalError(
+  journalPath: string,
+  error: unknown,
+  detail?: string,
+): Error {
+  const reason =
+    detail ?? (error instanceof Error ? error.message : String(error));
+  return new Error(`Review event journal ${journalPath} ${reason}`, {
+    cause: error,
+  });
+}
+
 function normalizeWaitOptions(
   options: WaitForReviewEventsOptions,
 ): NormalizedWaitOptions {
   return {
     documentPath: options.documentPath
-      ? path.resolve(options.documentPath)
+      ? canonicalPath(options.documentPath)
       : undefined,
     afterSequence: Math.max(0, options.afterSequence ?? 0),
     timeoutMs:
@@ -225,7 +469,30 @@ function matchesWaiter(
 ): boolean {
   if (event.sequence <= options.afterSequence) return false;
   if (!options.documentPath) return true;
-  return path.resolve(event.documentPath) === options.documentPath;
+  return canonicalPath(event.documentPath) === options.documentPath;
+}
+
+function canonicalPath(value: string): string {
+  const resolved = path.resolve(value);
+
+  try {
+    return fs.realpathSync.native(resolved);
+  } catch {
+    const unresolvedSegments: string[] = [];
+    let existingPath = resolved;
+
+    while (true) {
+      try {
+        const canonicalExistingPath = fs.realpathSync.native(existingPath);
+        return path.join(canonicalExistingPath, ...unresolvedSegments);
+      } catch {
+        const parentPath = path.dirname(existingPath);
+        if (parentPath === existingPath) return resolved;
+        unresolvedSegments.unshift(path.basename(existingPath));
+        existingPath = parentPath;
+      }
+    }
+  }
 }
 
 function resultForEvents(
@@ -237,6 +504,13 @@ function resultForEvents(
     events,
     timedOut,
     nextSequence,
+  };
+}
+
+function cloneReviewEvent(event: ReviewCompletedEvent): ReviewCompletedEvent {
+  return {
+    ...event,
+    summary: { ...event.summary },
   };
 }
 

@@ -3,8 +3,10 @@ import { setTimeout as sleep } from "node:timers/promises";
 export const REVIEW_WATCH_POLL_SECONDS = 240;
 
 const REVIEW_WATCH_RESPONSE_GRACE_MS = 5_000;
-const REVIEW_WATCH_RETRY_DELAY_MS = 100;
-export const REVIEW_WATCH_MAX_RETRIES = 5;
+export const REVIEW_WATCH_RETRY_BASE_DELAY_MS = 100;
+export const REVIEW_WATCH_RETRY_MAX_DELAY_MS = 5_000;
+/** Kept as a compatibility export; transport retries are now deadline-bound. */
+export const REVIEW_WATCH_MAX_RETRIES = Number.POSITIVE_INFINITY;
 
 const RETRYABLE_WATCH_ERROR_CODES = new Set([
   "ECONNABORTED",
@@ -35,13 +37,23 @@ export interface ReviewWatchPayload {
   [key: string]: unknown;
 }
 
+export interface ReviewWatchTransportFailure {
+  error: unknown;
+  url: URL;
+  attempt: number;
+}
+
 export interface ReviewWatchOptions {
   fetchImpl: typeof fetch;
   request: ReviewWatchRequest;
   url: URL;
   fromNow?: boolean;
+  afterSequence?: number;
   timeoutSeconds?: number;
   sleepImpl?: (ms: number) => Promise<void>;
+  onTransportFailure?: (
+    failure: ReviewWatchTransportFailure,
+  ) => URL | undefined | Promise<URL | undefined>;
 }
 
 /**
@@ -59,9 +71,11 @@ export async function waitForReviewEvents(
   const deadline = timeoutMs === undefined ? undefined : Date.now() + timeoutMs;
   const sleepImpl = options.sleepImpl ?? ((ms: number) => sleep(ms));
 
-  let fromNow = options.fromNow ?? true;
+  let currentUrl = new URL(options.url.toString());
+  const hasCallerCursor = options.afterSequence !== undefined;
+  let fromNow = hasCallerCursor ? false : (options.fromNow ?? true);
   let needsCursorAnchor = fromNow;
-  let afterSequence: number | undefined;
+  let afterSequence = normalizeAfterSequence(options.afterSequence);
   let firstLongPoll = true;
   let consecutiveRetries = 0;
 
@@ -105,14 +119,15 @@ export async function waitForReviewEvents(
             Math.min(pollMs + REVIEW_WATCH_RESPONSE_GRACE_MS, remainingMs),
           );
     const requestController = new AbortController();
-    const responseTimeout = setTimeout(
-      () => requestController.abort(),
-      responseTimeoutMs,
-    );
+    let responseTimeoutTriggered = false;
+    const responseTimeout = setTimeout(() => {
+      responseTimeoutTriggered = true;
+      requestController.abort();
+    }, responseTimeoutMs);
 
     let payload: ReviewWatchPayload;
     try {
-      const response = await options.fetchImpl(options.url, {
+      const response = await options.fetchImpl(currentUrl, {
         method: "POST",
         headers: { "Content-Type": "application/json" },
         body: JSON.stringify(body),
@@ -130,12 +145,28 @@ export async function waitForReviewEvents(
       }
 
       consecutiveRetries += 1;
-      if (consecutiveRetries > REVIEW_WATCH_MAX_RETRIES) {
-        throw error;
-      }
-
       if (deadline !== undefined && Date.now() >= deadline) {
         return timeoutPayload(afterSequence);
+      }
+
+      if (
+        !responseTimeoutTriggered &&
+        isConnectionFailure(error) &&
+        options.onTransportFailure
+      ) {
+        const recoveredUrl = await options.onTransportFailure({
+          error,
+          url: new URL(currentUrl.toString()),
+          attempt: consecutiveRetries,
+        });
+        if (recoveredUrl !== undefined) {
+          if (!(recoveredUrl instanceof URL)) {
+            throw new TypeError(
+              "onTransportFailure must return a URL when it returns a value",
+            );
+          }
+          currentUrl = new URL(recoveredUrl.toString());
+        }
       }
 
       const retryRemainingMs =
@@ -145,7 +176,9 @@ export async function waitForReviewEvents(
       if (retryRemainingMs <= 0) {
         return timeoutPayload(afterSequence);
       }
-      await sleepImpl(Math.min(REVIEW_WATCH_RETRY_DELAY_MS, retryRemainingMs));
+      await sleepImpl(
+        Math.min(retryDelayMs(consecutiveRetries), retryRemainingMs),
+      );
       continue;
     } finally {
       clearTimeout(responseTimeout);
@@ -173,6 +206,18 @@ export async function waitForReviewEvents(
       return { ...payload, events: [], timedOut: true };
     }
   }
+}
+
+function retryDelayMs(attempt: number): number {
+  return Math.min(
+    REVIEW_WATCH_RETRY_MAX_DELAY_MS,
+    REVIEW_WATCH_RETRY_BASE_DELAY_MS * 2 ** Math.max(0, attempt - 1),
+  );
+}
+
+function normalizeAfterSequence(value: number | undefined): number | undefined {
+  if (value === undefined || !Number.isFinite(value)) return undefined;
+  return Math.max(0, Math.floor(value));
 }
 
 function sequenceFromPayload(payload: ReviewWatchPayload): number | undefined {
@@ -214,4 +259,25 @@ function isRetryableWatchError(error: unknown): boolean {
   }
 
   return isRetryableWatchError(candidate.cause);
+}
+
+function isConnectionFailure(error: unknown): boolean {
+  if (!error || typeof error !== "object") return false;
+
+  const candidate = error as {
+    cause?: unknown;
+    code?: unknown;
+    name?: unknown;
+  };
+  if (
+    typeof candidate.code === "string" &&
+    RETRYABLE_WATCH_ERROR_CODES.has(candidate.code)
+  ) {
+    return true;
+  }
+  if (candidate.name === "AbortError" || candidate.name === "TimeoutError") {
+    return false;
+  }
+
+  return isConnectionFailure(candidate.cause);
 }

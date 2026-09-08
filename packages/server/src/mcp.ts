@@ -7,6 +7,8 @@ import {
   markRoughdraftResolved,
 } from "@roughdraft/rfm";
 import { waitForReviewEvents } from "./review-events-watch.js";
+import { runtimeStateDirectory } from "./local-domain.js";
+import { ReviewRegistry } from "./review-registry.js";
 
 interface JsonRpcRequest {
   jsonrpc?: "2.0";
@@ -34,7 +36,7 @@ const tools: ToolDefinition[] = [
   {
     name: "roughdraft_get_open_documents",
     description:
-      "Return Roughdraft documents known to the MCP server. This first version is stateless and may return an empty list.",
+      "Return registered local reviews, including document paths, readable routes, and pending or completed status. Reads the durable registry even when the server is stopped.",
     inputSchema: {
       type: "object",
       additionalProperties: false,
@@ -237,7 +239,10 @@ export async function callTool(
   fetchImpl: typeof fetch,
 ): Promise<unknown> {
   if (name === "roughdraft_get_open_documents") {
-    return { documents: [] };
+    const registry = new ReviewRegistry(
+      path.join(runtimeStateDirectory(env), "review-registry.json"),
+    );
+    return { documents: registry.list() };
   }
 
   if (name === "roughdraft_get_review_index") {
@@ -288,6 +293,16 @@ export async function callTool(
           ? args.timeoutSeconds
           : undefined,
       url: new URL("/api/review-events/watch", server.url),
+      onTransportFailure: async () => {
+        const { createCliDependencies, ensureServerRunning } = await import(
+          "./cli.js"
+        );
+        const recovered = await ensureServerRunning(
+          createCliDependencies({ env, fetchImpl }),
+          { projectDir: projectPath },
+        );
+        return new URL("/api/review-events/watch", recovered.server.url);
+      },
     });
   }
 

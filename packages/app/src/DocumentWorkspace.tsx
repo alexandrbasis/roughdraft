@@ -12,8 +12,9 @@ import {
   RefreshCcw,
   Upload,
 } from "lucide-react";
-import { useCallback, useEffect, useRef, useState } from "react";
+import { useCallback, useEffect, useMemo, useRef, useState } from "react";
 import type { DocumentEditorViewMode } from "./app-navigation";
+import { writeTextToClipboard } from "./clipboard";
 import { RemoteSessionBanner } from "./components/RemoteSessionBanner";
 import { Button } from "./components/ui/button";
 import {
@@ -40,6 +41,18 @@ import {
 } from "./critic-markup";
 import { cn } from "./lib/utils";
 import {
+  createBrowserDraftStorage,
+  createDraftRecord,
+  DraftStorageError,
+  getDraftRevision,
+  getDraftTabId,
+  inspectDraftRecovery,
+  isDraftStorageKeyForDocument,
+  pageSnapshot,
+  type DraftStorage,
+  type StoredDraft,
+} from "./draft-storage";
+import {
   type DocumentInteractionMode,
   type DocumentSaveController,
   type DocumentSaveState,
@@ -50,6 +63,15 @@ import type { CompleteReviewOptions, Page, StorageBackend } from "./storage";
 import { useReviewLayoutShiftAnimation } from "./useReviewLayoutShiftAnimation";
 
 type DiskChangeState = "clean" | "changed" | "conflict" | "paused";
+type DraftRecoveryState =
+  | { kind: "checking" }
+  | { kind: "none" }
+  | { kind: "safe"; draft: StoredDraft }
+  | {
+      kind: "disk-changed";
+      draft: StoredDraft;
+      decision: "pending" | "local";
+    };
 type ReviewHandoffState =
   | "idle"
   | "notifying"
@@ -159,7 +181,7 @@ function formatFileCopyPreview(value: string) {
 }
 
 async function writePlainTextToClipboard(text: string) {
-  await navigator.clipboard.writeText(text);
+  await writeTextToClipboard(text);
 }
 
 function markdownToPlainText(markdown: string) {
@@ -208,14 +230,17 @@ function markdownToCleanRichHtml(markdown: string) {
 }
 
 async function writeRichTextToClipboard(markdown: string) {
-  const clipboardWithRichText = navigator.clipboard as Clipboard & {
-    write?: Clipboard["write"];
-  };
+  const clipboardWithRichText = navigator.clipboard as Clipboard | undefined;
+  const clipboardWithRichTextApi = clipboardWithRichText as
+    | (Clipboard & {
+        write?: Clipboard["write"];
+      })
+    | undefined;
   const html = markdownToCleanRichHtml(markdown);
   const plainText = markdownToPlainText(markdown);
 
-  if (clipboardWithRichText.write && typeof ClipboardItem !== "undefined") {
-    await clipboardWithRichText.write([
+  if (clipboardWithRichTextApi?.write && typeof ClipboardItem !== "undefined") {
+    await clipboardWithRichTextApi.write([
       new ClipboardItem({
         "text/html": new Blob([html], { type: "text/html" }),
         "text/plain": new Blob([plainText], { type: "text/plain" }),
@@ -382,6 +407,8 @@ interface DocumentWorkspaceProps {
   activeDocumentPath: string | null;
   documentCopyPath: string | null;
   documentFilenameLabel: string;
+  draftStorageKey: string;
+  persistDraft?: boolean;
   documentEditorViewMode: DocumentEditorViewMode;
   onDocumentEditorViewModeChange: (mode: DocumentEditorViewMode) => void;
   onSaveDocument: (id: string, content: string) => Promise<void>;
@@ -404,6 +431,8 @@ export function DocumentWorkspace({
   activeDocumentPath,
   documentCopyPath,
   documentFilenameLabel,
+  draftStorageKey,
+  persistDraft = true,
   documentEditorViewMode,
   onDocumentEditorViewModeChange,
   onSaveDocument,
@@ -435,18 +464,401 @@ export function DocumentWorkspace({
   const [overallComment, setOverallComment] = useState("");
   const [documentChangedSinceOpen, setDocumentChangedSinceOpen] =
     useState(false);
+  const [draftRecoveryState, setDraftRecoveryState] =
+    useState<DraftRecoveryState>({ kind: "checking" });
+  const [draftContentOverride, setDraftContentOverride] = useState<
+    string | null
+  >(null);
+  const [draftStorageError, setDraftStorageError] =
+    useState<DraftStorageError | null>(null);
+  const [otherTabDraftPending, setOtherTabDraftPending] = useState(false);
   const sawNoWatcherAfterNotifiedRef = useRef(false);
   const copiedFileActionTimeoutRef = useRef<number | null>(null);
   const saveControllerRef = useRef<DocumentSaveController | null>(null);
   const documentChangeTrackingReadyRef = useRef(false);
+  const draftStorageRef = useRef<DraftStorage | null>(null);
+  const draftStorageKeyRef = useRef<string | null>(null);
+  const draftBaseRef = useRef<ReturnType<typeof pageSnapshot> | null>(null);
+  const draftRecordRef = useRef<StoredDraft | null>(null);
+  const draftTabIdRef = useRef<string | null>(null);
+  const latestLocalContentRef = useRef<string | null>(null);
 
-  const handleSaveStateChange = useCallback(
-    (state: DocumentSaveState) => {
-      setSaveState(state);
-      onDocumentSaveStateChange(state);
+  if (!draftTabIdRef.current && persistDraft) {
+    draftTabIdRef.current = getDraftTabId();
+  }
+
+  const documentDraftStorageKey = useMemo(() => {
+    if (
+      !persistDraft ||
+      !backend ||
+      !activeDocumentPath ||
+      typeof draftStorageKey !== "string" ||
+      !draftStorageKey.trim()
+    ) {
+      return null;
+    }
+    return draftStorageKey.trim();
+  }, [activeDocumentPath, backend, draftStorageKey, persistDraft]);
+
+  const reportDraftStorageError = useCallback(
+    (error: unknown) => {
+      const nextError =
+        error instanceof DraftStorageError
+          ? error
+          : new DraftStorageError(
+              "unavailable",
+              "Browser draft storage is unavailable. Your local edits are still open, but they cannot be recovered after a reload.",
+              error,
+            );
+      setDraftStorageError(nextError);
+      onDocumentSaveStateChange("error");
+      return nextError;
     },
     [onDocumentSaveStateChange],
   );
+
+  const handleSaveStateChange = useCallback(
+    (state: DocumentSaveState) => {
+      const effectiveState = draftStorageError ? "error" : state;
+      setSaveState(effectiveState);
+      onDocumentSaveStateChange(effectiveState);
+    },
+    [draftStorageError, onDocumentSaveStateChange],
+  );
+
+  useEffect(() => {
+    if (!documentPage || !documentDraftStorageKey || !backend) {
+      draftStorageKeyRef.current = null;
+      draftBaseRef.current = null;
+      draftRecordRef.current = null;
+      setDraftRecoveryState({ kind: "none" });
+      setDraftContentOverride(null);
+      return;
+    }
+
+    draftStorageKeyRef.current = documentDraftStorageKey;
+    draftBaseRef.current = pageSnapshot(documentPage);
+    latestLocalContentRef.current = documentPage.content;
+    draftRecordRef.current = null;
+    setDraftContentOverride(null);
+    setOtherTabDraftPending(false);
+    setDraftRecoveryState({ kind: "checking" });
+
+    let storage = draftStorageRef.current;
+    try {
+      storage ??= createBrowserDraftStorage();
+      draftStorageRef.current = storage;
+      const draftTabId = draftTabIdRef.current;
+      if (!draftTabId) throw new Error("Draft tab identity is unavailable");
+      const draft = storage.read(documentDraftStorageKey, draftTabId);
+      const foreignDraftPending = storage
+        .list(documentDraftStorageKey)
+        .some((candidate) => candidate.tabId !== draftTabId);
+      const recovery = inspectDraftRecovery(draft, pageSnapshot(documentPage));
+
+      draftRecordRef.current = draft;
+      setOtherTabDraftPending(foreignDraftPending);
+      setDraftStorageError(null);
+
+      if (
+        recovery.kind === "safe" &&
+        recovery.draft.content !== documentPage.content
+      ) {
+        setDraftContentOverride(recovery.draft.content);
+        setDraftRecoveryState(recovery);
+        latestLocalContentRef.current = recovery.draft.content;
+        onDocumentLocalContentChange(recovery.draft.content);
+        onDocumentDirtyStateChange(true);
+        onDocumentSaveStateChange("unsaved");
+      } else if (recovery.kind === "disk-changed") {
+        setDraftRecoveryState({
+          kind: "disk-changed",
+          draft: recovery.draft,
+          decision: "pending",
+        });
+      } else {
+        setDraftRecoveryState({ kind: "none" });
+      }
+    } catch (error) {
+      reportDraftStorageError(error);
+      setDraftRecoveryState({ kind: "none" });
+    }
+  }, [
+    backend,
+    documentDraftStorageKey,
+    documentPage,
+    onDocumentDirtyStateChange,
+    onDocumentLocalContentChange,
+    onDocumentSaveStateChange,
+    reportDraftStorageError,
+  ]);
+
+  useEffect(() => {
+    const storageKey = documentDraftStorageKey;
+    if (!storageKey || typeof window === "undefined") return;
+
+    const handleStorage = (event: StorageEvent) => {
+      if (!event.key || !isDraftStorageKeyForDocument(event.key, storageKey)) {
+        return;
+      }
+
+      try {
+        const currentTabId = draftTabIdRef.current;
+        const foreignDraftPending =
+          draftStorageRef.current
+            ?.list(storageKey)
+            .some((draft) => draft.tabId !== currentTabId) ?? false;
+        setOtherTabDraftPending(foreignDraftPending);
+      } catch (error) {
+        reportDraftStorageError(error);
+      }
+    };
+
+    window.addEventListener("storage", handleStorage);
+    return () => window.removeEventListener("storage", handleStorage);
+  }, [documentDraftStorageKey, reportDraftStorageError]);
+
+  const handleDocumentLocalContentChange = useCallback(
+    (markdown: string) => {
+      onDocumentLocalContentChange(markdown);
+      latestLocalContentRef.current = markdown;
+
+      const storage = draftStorageRef.current;
+      const storageKey = draftStorageKeyRef.current;
+      const base = draftBaseRef.current;
+      const tabId = draftTabIdRef.current;
+      if (!storage || !storageKey || !base || !tabId) return;
+
+      const draft = createDraftRecord({
+        storageKey,
+        content: markdown,
+        base,
+        revision: getDraftRevision(tabId),
+        tabId,
+      });
+
+      try {
+        storage.write(draft);
+        draftRecordRef.current = draft;
+        setDraftStorageError(null);
+        setOtherTabDraftPending(
+          storage
+            .list(storageKey)
+            .some((candidate) => candidate.tabId !== tabId),
+        );
+        setDraftRecoveryState((current) => {
+          if (current.kind === "disk-changed") {
+            return { ...current, draft };
+          }
+          return current.kind === "safe" ? { kind: "safe", draft } : current;
+        });
+      } catch (error) {
+        reportDraftStorageError(error);
+      }
+    },
+    [onDocumentLocalContentChange, reportDraftStorageError],
+  );
+
+  const clearConfirmedDraft = useCallback(
+    (draft: StoredDraft) => {
+      if (draftRecordRef.current?.revision === draft.revision) {
+        draftRecordRef.current = null;
+        setDraftContentOverride(null);
+        setDraftRecoveryState({ kind: "none" });
+        const storage = draftStorageRef.current;
+        const storageKey = draftStorageKeyRef.current;
+        try {
+          setOtherTabDraftPending(
+            storage && storageKey
+              ? storage
+                  .list(storageKey)
+                  .some((candidate) => candidate.tabId !== draft.tabId)
+              : false,
+          );
+        } catch (error) {
+          reportDraftStorageError(error);
+        }
+      }
+    },
+    [reportDraftStorageError],
+  );
+
+  const handleSaveDocumentWithDraft = useCallback(
+    async (id: string, content: string) => {
+      const storage = draftStorageRef.current;
+      const storageKey = draftStorageKeyRef.current;
+      let draftAtSaveStart: StoredDraft | null = null;
+
+      if (storage && storageKey) {
+        try {
+          draftAtSaveStart = storage.read(
+            storageKey,
+            draftTabIdRef.current ?? undefined,
+          );
+        } catch (error) {
+          reportDraftStorageError(error);
+        }
+      }
+
+      await onSaveDocument(id, content);
+
+      if (!storage || !storageKey || !draftAtSaveStart) return;
+      if (draftAtSaveStart.content !== content) return;
+
+      try {
+        const removed = storage.removeIfRevision(
+          storageKey,
+          draftAtSaveStart.revision,
+          draftAtSaveStart.tabId,
+        );
+        if (removed) {
+          for (const copy of storage.list(storageKey)) {
+            if (copy.content === content) {
+              storage.removeIfRevision(storageKey, copy.revision, copy.tabId);
+            }
+          }
+          clearConfirmedDraft(draftAtSaveStart);
+          setDraftStorageError(null);
+        } else {
+          setOtherTabDraftPending(true);
+        }
+      } catch (error) {
+        reportDraftStorageError(error);
+        throw error;
+      }
+    },
+    [clearConfirmedDraft, onSaveDocument, reportDraftStorageError],
+  );
+
+  const handleDiscardDraft = useCallback(() => {
+    const storage = draftStorageRef.current;
+    const storageKey = draftStorageKeyRef.current;
+    const draft = draftRecordRef.current;
+    if (!storage || !storageKey || !draft) return;
+
+    try {
+      if (storage.removeIfRevision(storageKey, draft.revision, draft.tabId)) {
+        clearConfirmedDraft(draft);
+        setDraftStorageError(null);
+      } else {
+        setOtherTabDraftPending(true);
+      }
+    } catch (error) {
+      reportDraftStorageError(error);
+    }
+  }, [clearConfirmedDraft, reportDraftStorageError]);
+
+  const handleRecoverChangedDraft = useCallback(() => {
+    if (draftRecoveryState.kind !== "disk-changed") return;
+
+    setDraftContentOverride(draftRecoveryState.draft.content);
+    setDraftRecoveryState({
+      kind: "disk-changed",
+      draft: draftRecoveryState.draft,
+      decision: "local",
+    });
+    latestLocalContentRef.current = draftRecoveryState.draft.content;
+    onDocumentLocalContentChange(draftRecoveryState.draft.content);
+    onDocumentDirtyStateChange(true);
+    onDocumentSaveStateChange("unsaved");
+  }, [
+    draftRecoveryState,
+    onDocumentDirtyStateChange,
+    onDocumentLocalContentChange,
+    onDocumentSaveStateChange,
+  ]);
+
+  const handleRecoverOtherDraft = useCallback(() => {
+    const storage = draftStorageRef.current;
+    const storageKey = draftStorageKeyRef.current;
+    const tabId = draftTabIdRef.current;
+    if (
+      !storage ||
+      !storageKey ||
+      !tabId ||
+      !documentPage ||
+      draftRecordRef.current
+    )
+      return;
+    try {
+      const saved = storage
+        .list(storageKey)
+        .filter((draft) => draft.tabId !== tabId)
+        .at(-1);
+      if (!saved) return;
+      const adopted = createDraftRecord({
+        storageKey,
+        content: saved.content,
+        base: { content: saved.baseContent, version: saved.baseVersion },
+        tabId,
+        revision: getDraftRevision(tabId),
+      });
+      storage.write(adopted);
+      draftRecordRef.current = adopted;
+      const recovery = inspectDraftRecovery(
+        adopted,
+        pageSnapshot(documentPage),
+      );
+      if (recovery.kind === "disk-changed") {
+        setDraftRecoveryState({ ...recovery, decision: "pending" });
+      } else {
+        setDraftRecoveryState({ kind: "safe", draft: adopted });
+        setDraftContentOverride(adopted.content);
+        latestLocalContentRef.current = adopted.content;
+        onDocumentLocalContentChange(adopted.content);
+        onDocumentDirtyStateChange(true);
+        onDocumentSaveStateChange("unsaved");
+      }
+    } catch (error) {
+      reportDraftStorageError(error);
+    }
+  }, [
+    documentPage,
+    onDocumentLocalContentChange,
+    onDocumentDirtyStateChange,
+    onDocumentSaveStateChange,
+    reportDraftStorageError,
+  ]);
+
+  const handleReloadAndDiscardDraft = useCallback(async () => {
+    await onReloadDocumentFromDisk();
+    handleDiscardDraft();
+  }, [handleDiscardDraft, onReloadDocumentFromDisk]);
+
+  const handleOverwriteDocumentWithDraft = useCallback(async () => {
+    // Capture the exact persisted revision that the explicit overwrite is
+    // confirming.  The editor can normalize content while the save is in
+    // flight; revision matching is the durable ownership check and also
+    // protects a newer draft written by another tab.
+    const storage = draftStorageRef.current;
+    const storageKey = draftStorageKeyRef.current;
+    const draftAtOverwriteStart = draftRecordRef.current;
+
+    await onOverwriteDocumentOnDisk();
+
+    if (!storage || !storageKey || !draftAtOverwriteStart) return;
+
+    try {
+      const removed = storage.removeIfRevision(
+        storageKey,
+        draftAtOverwriteStart.revision,
+        draftAtOverwriteStart.tabId,
+      );
+      if (removed) {
+        for (const copy of storage.list(storageKey)) {
+          if (copy.content === draftAtOverwriteStart.content) {
+            storage.removeIfRevision(storageKey, copy.revision, copy.tabId);
+          }
+        }
+        clearConfirmedDraft(draftAtOverwriteStart);
+        setDraftStorageError(null);
+      } else {
+        setOtherTabDraftPending(true);
+      }
+    } catch (error) {
+      reportDraftStorageError(error);
+    }
+  }, [clearConfirmedDraft, onOverwriteDocumentOnDisk, reportDraftStorageError]);
 
   const [documentHasComments, setDocumentHasComments] = useState(
     () =>
@@ -567,6 +979,17 @@ export function DocumentWorkspace({
     };
   }, [documentDiskChangeState, documentPage]);
 
+  useEffect(() => {
+    if (!documentPage) return;
+
+    const handleOnline = () => {
+      void saveControllerRef.current?.retrySave();
+    };
+
+    window.addEventListener("online", handleOnline);
+    return () => window.removeEventListener("online", handleOnline);
+  }, [documentPage]);
+
   const handleCompleteReview = useCallback(
     async (options?: CompleteReviewOptions) => {
       if (!activeDocumentPath || reviewHandoffState === "notifying") return;
@@ -669,6 +1092,33 @@ export function DocumentWorkspace({
   );
   const ActiveDocumentInteractionModeIcon =
     activeDocumentInteractionMode?.Icon ?? PencilLine;
+  const draftIsSafeRecovered = draftRecoveryState.kind === "safe";
+  const draftHasDiskConflict = draftRecoveryState.kind === "disk-changed";
+  const draftHasLocalRecovery =
+    draftHasDiskConflict && draftRecoveryState.decision === "local";
+  const draftBlocksSave = draftHasDiskConflict;
+  const effectiveDiskChangeState =
+    documentDiskChangeState !== "clean"
+      ? documentDiskChangeState
+      : draftBlocksSave
+        ? "conflict"
+        : "clean";
+  const effectiveSaveState = draftStorageError
+    ? "error"
+    : otherTabDraftPending
+      ? "unsaved"
+      : saveState;
+  const draftRecoveryNoticeVisible =
+    draftIsSafeRecovered || draftHasDiskConflict;
+  const hasTopNotice =
+    documentDiskChangeState !== "clean" ||
+    draftRecoveryNoticeVisible ||
+    otherTabDraftPending ||
+    !!draftStorageError;
+  const documentPageForEditor =
+    documentPage && draftContentOverride !== null
+      ? { ...documentPage, content: draftContentOverride }
+      : documentPage;
   const conflictNotice =
     documentDiskChangeState === "clean"
       ? null
@@ -702,8 +1152,8 @@ export function DocumentWorkspace({
     activeDocumentPath ?? documentFilenameLabel,
   );
   const reviewHandoffDisabled = isReviewHandoffDisabled({
-    saveState,
-    documentDiskChangeState,
+    saveState: effectiveSaveState,
+    documentDiskChangeState: effectiveDiskChangeState,
     reviewHandoffState,
   });
   const reviewHandoffButtonDisabled =
@@ -718,25 +1168,174 @@ export function DocumentWorkspace({
       data-document-embed={embedded ? "true" : undefined}
       className={cn(
         "min-h-0 flex-1 overflow-y-auto px-8 pb-8 sm:px-12",
-        conflictNotice ? "pt-40 sm:pt-28" : "pt-10",
+        hasTopNotice ? "pt-40 sm:pt-28" : "pt-10",
       )}
     >
       <RemoteSessionBanner backend={backend} />
+      {otherTabDraftPending &&
+      !draftRecoveryNoticeVisible &&
+      !draftStorageError ? (
+        <div
+          data-testid="draft-other-notice"
+          role="status"
+          className="fixed top-3 left-1/2 z-[65] flex w-[min(calc(100vw-1rem),52rem)] -translate-x-1/2 flex-wrap items-center justify-between gap-3 rounded-lg border border-sky-300 bg-sky-50 p-4 text-sky-950 shadow-lg dark:border-sky-800 dark:bg-sky-950 dark:text-sky-100"
+        >
+          <p className="text-sm">
+            This browser has an unsaved draft from another tab. Save your
+            current edits before recovering it.
+          </p>
+          <Button
+            data-testid="draft-recovery-other"
+            type="button"
+            size="sm"
+            disabled={!!draftRecordRef.current || saveState === "saving"}
+            onClick={handleRecoverOtherDraft}
+          >
+            Recover saved browser draft
+          </Button>
+        </div>
+      ) : null}
+      {draftStorageError ? (
+        <div
+          data-testid="draft-storage-error"
+          role="alert"
+          className="fixed top-3 left-1/2 z-[70] flex w-[min(calc(100vw-1rem),52rem)] -translate-x-1/2 items-start gap-2.5 rounded-[8px] border border-red-300 bg-red-50 px-3 py-3 text-red-950 shadow-[0_14px_40px_rgba(127,29,29,0.18)] dark:border-red-800 dark:bg-red-950 dark:text-red-100"
+        >
+          <AlertTriangle
+            className="mt-0.5 size-4 shrink-0"
+            aria-hidden="true"
+          />
+          <div className="min-w-0">
+            <div className="text-sm font-semibold">
+              Draft recovery unavailable
+            </div>
+            <div className="mt-0.5 text-xs leading-5">
+              {draftStorageError.message} Roughdraft will keep showing the
+              current edits, but it cannot report them as durably saved.
+            </div>
+          </div>
+        </div>
+      ) : null}
+      {draftRecoveryNoticeVisible && draftRecoveryState.kind === "safe" ? (
+        <div
+          data-testid="draft-recovery-notice"
+          role="status"
+          aria-label="Recovered local draft"
+          className="fixed top-3 left-1/2 z-[65] flex w-[min(calc(100vw-1rem),52rem)] -translate-x-1/2 flex-col gap-3 rounded-[8px] border border-sky-300 bg-sky-50 px-3 py-3 text-sky-950 shadow-[0_14px_40px_rgba(14,116,144,0.18)] dark:border-sky-800 dark:bg-sky-950 dark:text-sky-100 sm:flex-row sm:items-center sm:justify-between sm:px-4"
+        >
+          <div className="flex min-w-0 items-start gap-2.5">
+            <RefreshCcw
+              className="mt-0.5 size-4 shrink-0 text-sky-700 dark:text-sky-300"
+              aria-hidden="true"
+            />
+            <div className="min-w-0">
+              <div className="text-sm font-semibold">Recovered local draft</div>
+              <div className="mt-0.5 text-xs leading-5 text-sky-900 dark:text-sky-200">
+                Your edits were recovered after the last save failed. The
+                document is unsaved until Roughdraft confirms a new save.
+              </div>
+            </div>
+          </div>
+          <div className="flex shrink-0 flex-wrap items-center gap-1.5 sm:justify-end">
+            <Button
+              type="button"
+              data-testid="draft-recovery-save"
+              size="sm"
+              className="h-8 rounded-[7px] bg-sky-900 px-2 text-xs text-white hover:bg-sky-800 dark:bg-sky-600 dark:hover:bg-sky-500"
+              onClick={() => void saveControllerRef.current?.flushSave()}
+            >
+              <Check className="size-3.5" />
+              Save recovered draft
+            </Button>
+            <Button
+              type="button"
+              data-testid="draft-recovery-discard"
+              variant="ghost"
+              size="sm"
+              className="h-8 rounded-[7px] bg-white/55 px-2 text-xs text-sky-950 hover:bg-white dark:bg-white/10 dark:text-sky-100 dark:hover:bg-white/20"
+              onClick={handleDiscardDraft}
+            >
+              Discard recovered draft
+            </Button>
+          </div>
+        </div>
+      ) : null}
+      {draftRecoveryNoticeVisible &&
+      draftRecoveryState.kind === "disk-changed" ? (
+        <div
+          data-testid="draft-recovery-notice"
+          role="status"
+          aria-label="Local draft needs recovery"
+          className="fixed top-3 left-1/2 z-[65] flex w-[min(calc(100vw-1rem),52rem)] -translate-x-1/2 flex-col gap-3 rounded-[8px] border border-amber-300 bg-amber-50 px-3 py-3 text-amber-950 shadow-[0_14px_40px_rgba(120,53,15,0.18)] dark:border-amber-800 dark:bg-amber-950 dark:text-amber-100 sm:flex-row sm:items-center sm:justify-between sm:px-4"
+        >
+          <div className="flex min-w-0 items-start gap-2.5">
+            <AlertTriangle
+              className="mt-0.5 size-4 shrink-0 text-amber-700 dark:text-amber-400"
+              aria-hidden="true"
+            />
+            <div className="min-w-0">
+              <div className="text-sm font-semibold">
+                Disk version changed while a local draft was pending
+              </div>
+              <div className="mt-0.5 text-xs leading-5 text-amber-900 dark:text-amber-200">
+                The current disk content is preserved. Review the local draft
+                before choosing recovery; autosave is paused until then.
+              </div>
+            </div>
+          </div>
+          <div className="flex shrink-0 flex-wrap items-center gap-1.5 sm:justify-end">
+            <Button
+              type="button"
+              data-testid="draft-recovery-keep-disk"
+              variant="ghost"
+              size="sm"
+              className="h-8 rounded-[7px] bg-white/55 px-2 text-xs text-amber-950 hover:bg-white dark:bg-white/10 dark:text-amber-100 dark:hover:bg-white/20"
+              onClick={() => void handleReloadAndDiscardDraft()}
+            >
+              Keep disk version
+            </Button>
+            {draftHasLocalRecovery ? (
+              <Button
+                type="button"
+                data-testid="draft-recovery-overwrite"
+                size="sm"
+                className="h-8 rounded-[7px] bg-amber-900 px-2 text-xs text-white hover:bg-amber-800 dark:bg-amber-600 dark:hover:bg-amber-500"
+                onClick={() => void handleOverwriteDocumentWithDraft()}
+              >
+                <Upload className="size-3.5" />
+                Overwrite disk file
+              </Button>
+            ) : (
+              <Button
+                type="button"
+                data-testid="draft-recovery-recover-local"
+                variant="ghost"
+                size="sm"
+                className="h-8 rounded-[7px] bg-white/55 px-2 text-xs text-amber-950 hover:bg-white dark:bg-white/10 dark:text-amber-100 dark:hover:bg-white/20"
+                onClick={handleRecoverChangedDraft}
+              >
+                <RefreshCcw className="size-3.5" />
+                Recover local draft
+              </Button>
+            )}
+          </div>
+        </div>
+      ) : null}
       {documentPage ? (
         <div
           className="fixed top-3 left-3 z-[60]"
           data-testid="document-save-status-corner"
         >
           <DocumentSaveStatusIndicator
-            saveState={saveState}
-            diskChangeState={documentDiskChangeState}
+            saveState={effectiveSaveState}
+            diskChangeState={effectiveDiskChangeState}
           />
         </div>
       ) : null}
       <div
         className={cn(
           "fixed right-3 z-[60] flex max-w-[min(16rem,calc(100vw-1rem))] flex-col items-end gap-1.5",
-          conflictNotice ? "top-[19rem] sm:top-[7rem]" : "top-3",
+          hasTopNotice ? "top-[19rem] sm:top-[7rem]" : "top-3",
         )}
         data-testid="document-status-stack"
         data-document-status-stack="true"
@@ -948,7 +1547,7 @@ export function DocumentWorkspace({
               variant="ghost"
               size="sm"
               className="h-8 rounded-[7px] bg-white/55 dark:bg-white/10 px-2 text-xs text-amber-950 dark:text-amber-100 hover:bg-white dark:hover:bg-white/20"
-              onClick={() => void onReloadDocumentFromDisk()}
+              onClick={() => void handleReloadAndDiscardDraft()}
             >
               <RefreshCcw className="size-3.5" />
               Reload from disk
@@ -972,7 +1571,7 @@ export function DocumentWorkspace({
               variant="ghost"
               size="sm"
               className="h-8 rounded-[7px] bg-amber-900 dark:bg-amber-600 px-2 text-xs text-white hover:bg-amber-800 dark:hover:bg-amber-500"
-              onClick={() => void onOverwriteDocumentOnDisk()}
+              onClick={() => void handleOverwriteDocumentWithDraft()}
             >
               <Upload className="size-3.5" />
               Overwrite disk file
@@ -1131,26 +1730,29 @@ export function DocumentWorkspace({
             </div>
           </div>
         ) : null}
-        {documentPage ? (
+        {documentPageForEditor ? (
           backend ? (
             <PageCard
-              key={`${documentPage.id}:${activeDocumentPath ?? ""}`}
-              page={documentPage}
+              key={`${documentPageForEditor.id}:${activeDocumentPath ?? ""}`}
+              page={documentPageForEditor}
               activeDocumentPath={activeDocumentPath}
               selected
-              onSave={onSaveDocument}
+              onSave={handleSaveDocumentWithDraft}
               onSaveStateChange={handleSaveStateChange}
               editorViewMode={documentEditorViewMode}
               interactionMode={documentInteractionMode}
               backend={backend}
               onCommentRailPresenceChange={setDocumentHasComments}
               onDirtyStateChange={handleDocumentDirtyStateChange}
-              onLocalContentChange={onDocumentLocalContentChange}
+              onLocalContentChange={handleDocumentLocalContentChange}
               onSaveControllerChange={(controller) => {
                 saveControllerRef.current = controller;
               }}
-              saveBlocked={documentDiskChangeState !== "clean"}
+              saveBlocked={
+                documentDiskChangeState !== "clean" || draftBlocksSave
+              }
               forceResetKey={documentForceResetKey}
+              initiallyDirty={draftIsSafeRecovered || draftHasLocalRecovery}
             />
           ) : null
         ) : (

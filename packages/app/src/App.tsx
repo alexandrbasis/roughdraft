@@ -35,6 +35,7 @@ import {
   ROUGHDRAFT_FLAVORED_MARKDOWN_PATH,
   syncRequestedPathInUrl,
 } from "./app-navigation";
+import { writeTextToClipboard } from "./clipboard";
 import { Button } from "./components/ui/button";
 import {
   Dialog,
@@ -57,6 +58,12 @@ import { cn } from "./lib/utils";
 import type { DocumentSaveState } from "./PageCard";
 import { PreviewBackend } from "./preview-backend";
 import { RoughdraftFormatDemo } from "./RoughdraftFormatDemo";
+import { ReviewHome } from "./review-home/ReviewHome";
+import {
+  getFriendlyReviewRouteFromLocation,
+  resolveReviewRoute,
+  type ReviewRouteRecord,
+} from "./review-home/review-route";
 import {
   type CompleteReviewOptions,
   MarkdownFileConflictError,
@@ -320,7 +327,7 @@ export function Homepage({
 
   const handleCopySetupPrompt = useCallback(async () => {
     try {
-      await navigator.clipboard.writeText(AGENT_SETUP_PROMPT);
+      await writeTextToClipboard(AGENT_SETUP_PROMPT);
       setCopyState("copied");
       window.setTimeout(() => setCopyState("idle"), 1800);
     } catch {
@@ -401,6 +408,7 @@ export function Homepage({
         </div>
       ) : null}
       <div className="w-full">
+        <ReviewHome />
         <div className="font-die-grotesk-a mx-auto max-w-[1500px] text-left">
           <p
             className="text-[clamp(1.125rem,0.9rem+0.35vw,1.375rem)] font-bold text-stone-500 dark:text-stone-500"
@@ -1457,6 +1465,8 @@ export function PreviewPage() {
         activeDocumentPath={PREVIEW_DOCUMENT_PATH}
         documentCopyPath={PREVIEW_DOCUMENT_PATH}
         documentFilenameLabel={PREVIEW_DOCUMENT_PATH}
+        draftStorageKey={`preview:${PREVIEW_DOCUMENT_PATH}`}
+        persistDraft={false}
         documentEditorViewMode={editorViewMode}
         onDocumentEditorViewModeChange={setEditorViewMode}
         onSaveDocument={handleSaveDocument}
@@ -1477,12 +1487,15 @@ export function PreviewPage() {
 
 export function App() {
   const initialRequestedPathState = getRequestedPathState();
+  const friendlyReviewRoute = getFriendlyReviewRouteFromLocation();
   const [requestedPathState] = useState(initialRequestedPathState);
   const isRoughdraftFlavoredMarkdownRoute =
     window.location.pathname === ROUGHDRAFT_FLAVORED_MARKDOWN_PATH;
   const isPreviewRoute = window.location.pathname === PREVIEW_PATH;
   const [backend, setBackend] = useState<StorageBackend | null>(null);
   const [documentPage, setDocumentPage] = useState<Page | null>(null);
+  const [resolvedReviewRoute, setResolvedReviewRoute] =
+    useState<ReviewRouteRecord | null>(null);
   const [activeDocumentPath, setActiveDocumentPath] = useState<string | null>(
     initialRequestedPathState.documentPath,
   );
@@ -1594,6 +1607,29 @@ export function App() {
 
         setBackend(detectedBackend);
 
+        if (friendlyReviewRoute) {
+          const resolved = await resolveReviewRoute(friendlyReviewRoute);
+          if (cancelled) return;
+
+          if (!resolved) {
+            setActiveDocumentPath(null);
+            setLoadError("That review link is no longer registered.");
+            setLoading(false);
+            return;
+          }
+
+          setResolvedReviewRoute(resolved);
+          if (detectedBackend.canManageProjects) {
+            await detectedBackend.openProject(resolved.projectPath);
+          }
+          if (cancelled) return;
+
+          await loadDocument(detectedBackend, resolved.relativePath);
+          if (cancelled) return;
+          setLoading(false);
+          return;
+        }
+
         if (detectedBackend.info.kind === "remote") {
           const documentPath = detectedBackend.info.detail || "remote.md";
           await loadDocument(detectedBackend, documentPath);
@@ -1647,12 +1683,24 @@ export function App() {
     };
   }, [
     loadDocument,
+    friendlyReviewRoute,
     requestedPathState.documentPath,
     requestedPathState.projectPath,
     requestedPathState.rawPath,
   ]);
 
   useEffect(() => {
+    if (resolvedReviewRoute) {
+      document.title = `${resolvedReviewRoute.projectName} / ${resolvedReviewRoute.title}`;
+      return;
+    }
+
+    if (backend?.info.kind === "remote") {
+      document.title =
+        documentPage?.title ?? backend.info.detail ?? "Remote document";
+      return;
+    }
+
     const workspaceTitlePath = activeDocumentPath
       ? formatWorkspacePathForDisplay(
           backend?.info.projectPath
@@ -1669,8 +1717,10 @@ export function App() {
   }, [
     activeDocumentPath,
     backend,
+    documentPage?.title,
     isRoughdraftFlavoredMarkdownRoute,
     isPreviewRoute,
+    resolvedReviewRoute,
     requestedPathState.rawPath,
   ]);
 
@@ -1919,7 +1969,7 @@ export function App() {
     return <PreviewPage />;
   }
 
-  if (!requestedPathState.rawPath || loadError) {
+  if ((!requestedPathState.rawPath && !resolvedReviewRoute) || loadError) {
     return (
       <Homepage
         message={loadError ?? <HomepageSubtitle />}
@@ -1929,9 +1979,15 @@ export function App() {
   }
 
   const documentAbsolutePath =
-    activeDocumentPath && backend?.info.projectPath
+    resolvedReviewRoute?.documentPath ??
+    requestedPathState.rawPath ??
+    (activeDocumentPath && backend?.info.projectPath
       ? joinPath(backend.info.projectPath, activeDocumentPath)
-      : requestedPathState.rawPath;
+      : activeDocumentPath);
+  const draftStorageKey =
+    backend?.info.kind === "remote"
+      ? `remote:${backend.info.sessionId ?? "unknown"}:${backend.info.originPath ?? activeDocumentPath ?? "remote.md"}`
+      : (documentAbsolutePath ?? "unopened");
   const documentFilenameLabel =
     getPathLeaf(documentAbsolutePath ?? activeDocumentPath) ?? "Untitled.md";
 
@@ -1949,6 +2005,7 @@ export function App() {
         activeDocumentPath={activeDocumentPath}
         documentCopyPath={documentAbsolutePath}
         documentFilenameLabel={documentFilenameLabel}
+        draftStorageKey={draftStorageKey}
         documentEditorViewMode={documentEditorViewMode}
         onDocumentEditorViewModeChange={handleDocumentEditorViewModeChange}
         onSaveDocument={handleSaveDocument}
