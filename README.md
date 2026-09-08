@@ -9,12 +9,12 @@ license and stores comments and suggestions in the Markdown file.
 Use Node.js 22.13 or newer. Install the built package from this fork's GitHub release:
 
 ```bash
-npm install -g https://github.com/alexandrbasis/roughdraft/releases/download/v0.1.14-basis.1/alexandrbasis-roughdraft-0.1.14-basis.1.tgz
+npm install -g https://github.com/alexandrbasis/roughdraft/releases/download/v0.1.14-basis.2/alexandrbasis-roughdraft-0.1.14-basis.2.tgz
 roughdraft --version
 roughdraft open /absolute/path/to/file.md
 ```
 
-The version should be `0.1.14-basis.1`. The package is named
+The version should be `0.1.14-basis.2`. The package is named
 `@alexandrbasis/roughdraft`; the executable remains `roughdraft`. Installing it
 globally shares the executable name with the original package.
 The unscoped npm package `roughdraft` installs the original upstream version.
@@ -194,6 +194,11 @@ a server copy, which another browser can explicitly recover. The editor shows
 when that copy fails; changes made while disconnected depend on the local browser
 copy until synchronization succeeds. Clearing browser storage removes that local
 copy. Review events already lost by older versions cannot be reconstructed.
+
+The review inbox shows ten records per page. Use All, Waiting, or Reviewed to
+filter the list; each filter shows its total count. The selected filter and page
+are kept in the URL and survive a reload. Changing a filter returns to page one;
+if a refresh removes the last page, the inbox shows the nearest remaining page.
 
 ## Review history and recovery
 

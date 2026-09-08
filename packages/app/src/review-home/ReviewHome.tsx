@@ -1,6 +1,8 @@
 import {
   ArrowUpRight,
   CheckCircle2,
+  ChevronLeft,
+  ChevronRight,
   Clock3,
   FileText,
   RefreshCw,
@@ -9,6 +11,24 @@ import { useCallback, useEffect, useRef, useState } from "react";
 import { Button } from "../components/ui/button";
 import { reviewRouteHref, type ReviewRouteRecord } from "./review-route";
 import { ReviewHistory } from "./ReviewHistory";
+
+const PAGE_SIZE = 10;
+const REVIEW_FILTERS = [
+  { value: "all", label: "All" },
+  { value: "pending", label: "Waiting" },
+  { value: "completed", label: "Reviewed" },
+] as const;
+type ReviewFilter = (typeof REVIEW_FILTERS)[number]["value"];
+
+function readInboxLocation(): { status: ReviewFilter; page: number } {
+  const query = new URLSearchParams(window.location.search);
+  const status = query.get("reviewStatus");
+  const page = Number(query.get("reviewPage") ?? 1);
+  return {
+    status: status === "pending" || status === "completed" ? status : "all",
+    page: Number.isSafeInteger(page) && page > 0 ? page : 1,
+  };
+}
 
 async function loadReviews(): Promise<ReviewRouteRecord[]> {
   const response = await fetch("/api/reviews");
@@ -34,6 +54,54 @@ export function ReviewHome({
   const [error, setError] = useState<string | null>(null);
   const reviewsRef = useRef<ReviewRouteRecord[] | null>(null);
   const mountedRef = useRef(false);
+  const headingRef = useRef<HTMLHeadingElement>(null);
+  const [selection, setSelection] = useState(readInboxLocation);
+  const counts = {
+    all: reviews?.length ?? 0,
+    pending:
+      reviews?.filter((review) => review.status === "pending").length ?? 0,
+    completed:
+      reviews?.filter((review) => review.status === "completed").length ?? 0,
+  };
+  const filteredReviews = (reviews ?? [])
+    .filter(
+      (review) =>
+        selection.status === "all" || review.status === selection.status,
+    )
+    .sort(
+      (left, right) =>
+        Number(right.status === "pending") - Number(left.status === "pending"),
+    );
+  const pageCount = Math.max(1, Math.ceil(filteredReviews.length / PAGE_SIZE));
+  const page = reviews ? Math.min(selection.page, pageCount) : selection.page;
+  const firstIndex = (page - 1) * PAGE_SIZE;
+  const pageReviews = filteredReviews.slice(firstIndex, firstIndex + PAGE_SIZE);
+
+  useEffect(() => {
+    const readLocation = () => setSelection(readInboxLocation());
+    window.addEventListener("popstate", readLocation);
+    return () => window.removeEventListener("popstate", readLocation);
+  }, []);
+
+  useEffect(() => {
+    if (!reviews) return;
+    // Polling can remove the last page; clamp instead of displaying an empty one.
+    if (selection.page !== page)
+      setSelection((current) => ({ ...current, page }));
+    const url = new URL(window.location.href);
+    if (selection.status === "all") url.searchParams.delete("reviewStatus");
+    else url.searchParams.set("reviewStatus", selection.status);
+    if (page === 1) url.searchParams.delete("reviewPage");
+    else url.searchParams.set("reviewPage", String(page));
+    if (url.href !== window.location.href)
+      window.history.replaceState(window.history.state, "", url);
+  }, [reviews, selection.status, selection.page, page]);
+
+  const changePage = (nextPage: number) => {
+    setSelection((current) => ({ ...current, page: nextPage }));
+    headingRef.current?.focus();
+    headingRef.current?.scrollIntoView({ block: "start" });
+  };
 
   const refreshReviews = useCallback(async () => {
     if (!mountedRef.current) return;
@@ -148,11 +216,6 @@ export function ReviewHome({
     );
   }
 
-  const orderedReviews = [...reviews].sort(
-    (left, right) =>
-      Number(right.status === "pending") - Number(left.status === "pending"),
-  );
-
   return (
     <section
       aria-labelledby="review-home-heading"
@@ -167,6 +230,8 @@ export function ReviewHome({
           <h2
             className="mt-2 text-3xl font-semibold tracking-[-0.03em] text-slate-950 dark:text-slate-50 sm:text-4xl"
             data-testid="review-home-heading"
+            ref={headingRef}
+            tabIndex={-1}
             id="review-home-heading"
           >
             Pick up where the agent left off
@@ -198,8 +263,62 @@ export function ReviewHome({
         </div>
       ) : null}
 
+      <div className="mt-5 flex flex-wrap items-center justify-between gap-3">
+        <div
+          role="group"
+          aria-label="Filter reviews by status"
+          className="flex flex-wrap gap-1 rounded-lg bg-stone-100 p-1 dark:bg-slate-800"
+        >
+          {REVIEW_FILTERS.map(({ value, label }) => (
+            <Button
+              key={value}
+              data-testid={`review-filter-${value}`}
+              aria-pressed={selection.status === value}
+              variant="ghost"
+              className={`h-9 gap-2 px-3 text-sm transition-colors ${selection.status === value ? "bg-white text-slate-950 shadow-sm hover:bg-white dark:bg-slate-700 dark:text-white dark:hover:bg-slate-700" : "text-stone-500 dark:text-stone-400"}`}
+              onClick={() => setSelection({ status: value, page: 1 })}
+            >
+              {label}
+              <span className="text-xs tabular-nums opacity-70">
+                {counts[value]}
+              </span>
+            </Button>
+          ))}
+        </div>
+        <p
+          data-testid="review-page-summary"
+          className="text-xs tabular-nums text-stone-500 dark:text-stone-400"
+        >
+          {filteredReviews.length
+            ? `${firstIndex + 1}–${Math.min(firstIndex + PAGE_SIZE, filteredReviews.length)} of ${filteredReviews.length}`
+            : "0 reviews"}
+        </p>
+      </div>
+      {filteredReviews.length === 0 ? (
+        <div
+          data-testid="review-filter-empty"
+          className="mt-4 rounded-xl border border-dashed border-slate-200 px-5 py-10 text-center dark:border-slate-700"
+        >
+          <p
+            role="status"
+            className="text-sm text-stone-500 dark:text-stone-400"
+          >
+            {selection.status === "pending"
+              ? "No reviews waiting for you."
+              : "No completed reviews yet."}
+          </p>
+          <Button
+            data-testid="review-filter-reset"
+            variant="outline"
+            className="mt-3"
+            onClick={() => setSelection({ status: "all", page: 1 })}
+          >
+            Show all reviews
+          </Button>
+        </div>
+      ) : null}
       <div className="mt-4 grid gap-3" data-testid="review-home-list">
-        {orderedReviews.map((review) => {
+        {pageReviews.map((review) => {
           const pending = review.status === "pending";
           return (
             <div
@@ -274,6 +393,40 @@ export function ReviewHome({
           );
         })}
       </div>
+      {pageCount > 1 ? (
+        <nav
+          aria-label="Review pages"
+          className="mt-5 flex flex-wrap items-center justify-between gap-3"
+        >
+          <p
+            data-testid="review-page-position"
+            role="status"
+            className="text-xs tabular-nums text-stone-500 dark:text-stone-400"
+          >
+            Page {page} of {pageCount}
+          </p>
+          <div className="flex gap-2">
+            <Button
+              data-testid="review-page-previous"
+              variant="outline"
+              className="h-9 gap-1.5 px-3"
+              disabled={page === 1}
+              onClick={() => changePage(page - 1)}
+            >
+              <ChevronLeft aria-hidden="true" /> Previous
+            </Button>
+            <Button
+              data-testid="review-page-next"
+              variant="outline"
+              className="h-9 gap-1.5 px-3"
+              disabled={page === pageCount}
+              onClick={() => changePage(page + 1)}
+            >
+              Next <ChevronRight aria-hidden="true" />
+            </Button>
+          </div>
+        </nav>
+      ) : null}
     </section>
   );
 }
