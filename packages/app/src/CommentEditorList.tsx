@@ -5,6 +5,7 @@ import {
   type MutableRefObject,
   type ReactNode,
   useEffect,
+  useLayoutEffect,
   useMemo,
   useRef,
   useState,
@@ -22,6 +23,11 @@ import {
   type CriticCommentThread,
 } from "./critic-markup";
 import { cn } from "./lib/utils";
+
+interface FocusReturnTarget {
+  actionKey: string;
+  element: HTMLElement;
+}
 
 interface CommentEditorListProps {
   comments: CriticComment[];
@@ -111,6 +117,8 @@ export function CommentEditorList({
   getCommentActions,
 }: CommentEditorListProps) {
   const textareaRefs = useRef(new Map<string, HTMLTextAreaElement>());
+  const focusReturnRefs = useRef(new Map<string, FocusReturnTarget>());
+  const pendingFocusReturnIdRef = useRef<string | null>(null);
   const [drafts, setDrafts] = useState<Record<string, string>>({});
   const [editingCommentIds, setEditingCommentIds] = useState<string[]>([]);
   const threads = useMemo(() => buildCommentThreads(comments), [comments]);
@@ -118,6 +126,29 @@ export function CommentEditorList({
     () => new Map(comments.map((comment) => [comment.id, comment])),
     [comments],
   );
+
+  useEffect(() => {
+    const activeCommentIds = new Set(comments.map((comment) => comment.id));
+    for (const commentId of focusReturnRefs.current.keys()) {
+      if (!activeCommentIds.has(commentId)) {
+        focusReturnRefs.current.delete(commentId);
+      }
+    }
+  }, [comments]);
+
+  useLayoutEffect(() => {
+    const commentId = pendingFocusReturnIdRef.current;
+    if (!commentId) return;
+
+    const target = focusReturnRefs.current.get(commentId)?.element;
+    if (!target?.isConnected) return;
+
+    pendingFocusReturnIdRef.current = null;
+    target.focus();
+    requestAnimationFrame(() => {
+      if (target.isConnected) target.focus();
+    });
+  });
   const hasActiveSelection =
     !!selectedCommentId &&
     comments.some((comment) => comment.id === selectedCommentId);
@@ -222,6 +253,7 @@ export function CommentEditorList({
     const nextContent = (drafts[commentId] ?? comment.content).trim();
 
     if (nextContent.length === 0) {
+      restoreFocusForComment(commentId);
       onDeleteComment(commentId);
       return;
     }
@@ -236,6 +268,7 @@ export function CommentEditorList({
       return nextDrafts;
     });
     stopEditingComment(commentId);
+    restoreFocusForComment(commentId);
   };
 
   const cancelEditingComment = (commentId: string) => {
@@ -249,11 +282,22 @@ export function CommentEditorList({
     });
 
     if (comment.content.trim().length === 0) {
+      restoreFocusForComment(commentId);
       onDeleteComment(commentId);
       return;
     }
 
     stopEditingComment(commentId);
+    restoreFocusForComment(commentId);
+  };
+
+  const restoreFocusForComment = (commentId: string) => {
+    const comment = commentMap.get(commentId);
+    const triggerId = comment?.parentCommentId ?? commentId;
+    if (!focusReturnRefs.current.has(triggerId)) return;
+
+    onSelectComment?.(triggerId);
+    pendingFocusReturnIdRef.current = triggerId;
   };
 
   return (
@@ -290,6 +334,7 @@ export function CommentEditorList({
           selectedCommentId={selectedCommentId}
           hoveredCommentId={hoveredCommentId}
           textareaRefs={textareaRefs}
+          focusReturnRefs={focusReturnRefs}
           onDeleteComment={onDeleteComment}
           onUpdateComment={onUpdateComment}
           onSelectComment={onSelectComment}
@@ -328,6 +373,7 @@ interface CommentThreadNodeProps {
   selectedCommentId: string | null;
   hoveredCommentId: string | null;
   textareaRefs: MutableRefObject<Map<string, HTMLTextAreaElement>>;
+  focusReturnRefs: MutableRefObject<Map<string, FocusReturnTarget>>;
   onDeleteComment: (commentId: string) => void;
   onUpdateComment: (commentId: string, nextContent: string) => void;
   onSelectComment?: (commentId: string) => void;
@@ -357,6 +403,8 @@ function CommentActionButton({
   presentation = "default",
   icon,
   compact = false,
+  tabIndex,
+  buttonRef,
   className,
   onClick,
 }: {
@@ -366,12 +414,16 @@ function CommentActionButton({
   presentation?: "default" | "popover";
   icon: ReactNode;
   compact?: boolean;
+  tabIndex?: number;
+  buttonRef?: (node: HTMLButtonElement | null) => void;
   className?: string;
   onClick: (event: MouseEvent) => void;
 }) {
   const button = (
     <Button
       type="button"
+      ref={buttonRef}
+      tabIndex={tabIndex}
       aria-label={compact ? label : undefined}
       data-testid={testId}
       variant="ghost"
@@ -422,6 +474,7 @@ function CommentThreadNode({
   selectedCommentId,
   hoveredCommentId,
   textareaRefs,
+  focusReturnRefs,
   onDeleteComment,
   onUpdateComment,
   onSelectComment,
@@ -763,7 +816,21 @@ function CommentThreadNode({
                     presentation={action.presentation}
                     icon={action.icon}
                     compact={action.compact}
-                    onClick={action.onClick}
+                    tabIndex={interactive ? undefined : -1}
+                    buttonRef={(node) => {
+                      const target = focusReturnRefs.current.get(comment.id);
+                      if (node && target?.actionKey === action.key)
+                        target.element = node;
+                    }}
+                    onClick={(event) => {
+                      if (event.currentTarget instanceof HTMLElement) {
+                        focusReturnRefs.current.set(comment.id, {
+                          actionKey: action.key,
+                          element: event.currentTarget,
+                        });
+                      }
+                      action.onClick(event);
+                    }}
                   />
                 ))}
               </div>
@@ -790,6 +857,7 @@ function CommentThreadNode({
               selectedCommentId={selectedCommentId}
               hoveredCommentId={hoveredCommentId}
               textareaRefs={textareaRefs}
+              focusReturnRefs={focusReturnRefs}
               onDeleteComment={onDeleteComment}
               onUpdateComment={onUpdateComment}
               onSelectComment={onSelectComment}

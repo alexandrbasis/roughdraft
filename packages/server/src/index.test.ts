@@ -473,6 +473,70 @@ describe("createApp", () => {
     await waitingPromise;
   });
 
+  it("cleans up a review watcher when the long-poll client disconnects", async () => {
+    fs.writeFileSync(path.join(projectDir, "draft.md"), "# Draft\n");
+    const { app } = createApp({
+      homeDir,
+      staticDirPath: projectDir,
+    });
+    const server = app.listen(0);
+
+    try {
+      await new Promise<void>((resolve) =>
+        server.once("listening", () => resolve()),
+      );
+      const port = (server.address() as AddressInfo).port;
+      const controller = new AbortController();
+      const watch = fetch(`http://127.0.0.1:${port}/api/review-events/watch`, {
+        method: "POST",
+        headers: { "Content-Type": "application/json" },
+        body: JSON.stringify({
+          projectPath: projectDir,
+          path: "draft.md",
+          timeoutSeconds: 30,
+          batchWindowSeconds: 0,
+        }),
+        signal: controller.signal,
+      });
+
+      const statusUrl = new URL(
+        `http://127.0.0.1:${port}/api/review-events/status`,
+      );
+      statusUrl.searchParams.set("projectPath", projectDir);
+      statusUrl.searchParams.set("path", "draft.md");
+      for (let attempt = 0; attempt < 40; attempt += 1) {
+        const status = (await (await fetch(statusUrl)).json()) as {
+          watcherCount?: number;
+        };
+        if (status.watcherCount === 1) break;
+        await new Promise((resolve) => setTimeout(resolve, 10));
+      }
+
+      const watching = (await (await fetch(statusUrl)).json()) as {
+        watcherCount?: number;
+      };
+      expect(watching.watcherCount).toBe(1);
+      controller.abort();
+      await expect(watch).rejects.toMatchObject({ name: "AbortError" });
+
+      for (let attempt = 0; attempt < 40; attempt += 1) {
+        const status = (await (await fetch(statusUrl)).json()) as {
+          watcherCount?: number;
+        };
+        if (status.watcherCount === 0) break;
+        await new Promise((resolve) => setTimeout(resolve, 10));
+      }
+
+      const cleaned = (await (await fetch(statusUrl)).json()) as {
+        watcherCount?: number;
+      };
+      expect(cleaned.watcherCount).toBe(0);
+    } finally {
+      server.closeAllConnections?.();
+      await new Promise<void>((resolve) => server.close(() => resolve()));
+    }
+  });
+
   it("rejects page ids that resolve outside the project directory", async () => {
     const outsideName = `${path.basename(projectDir)}-secret`;
     const outsideFilePath = path.join(

@@ -1,3 +1,5 @@
+import packageManifest from "../../../package.json";
+import { agentSetupPrompt } from "../../server/release-info.mjs";
 import { act } from "react";
 import { createRoot, type Root } from "react-dom/client";
 import { TooltipProvider } from "@/components/ui/tooltip";
@@ -9,8 +11,7 @@ import {
   RoughdraftFlavoredMarkdownPage,
 } from "../src/App";
 
-const AGENT_SETUP_PROMPT =
-  "Install the Basis fork of Roughdraft using `npm install -g https://github.com/alexandrbasis/roughdraft/releases/download/v0.1.11-basis.1/alexandrbasis-roughdraft-0.1.11-basis.1.tgz`, then read `roughdraft help agent` and set yourself up to use it.";
+const AGENT_SETUP_PROMPT = agentSetupPrompt(packageManifest);
 
 function createDomRect({
   left = 0,

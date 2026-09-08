@@ -1783,6 +1783,7 @@ const RichTextEditorSurface = memo(function RichTextEditorSurface({
       const currentEditor = editorRef.current;
       if (!currentEditor) return;
 
+      const removedComment = commentsRef.current.get(commentId);
       const descendantIds = getCommentDescendantIds(
         commentId,
         commentsRef.current,
@@ -1796,7 +1797,9 @@ const RichTextEditorSurface = memo(function RichTextEditorSurface({
       commentsRef.current = nextComments;
       setComments(nextComments);
 
-      const chain = currentEditor.chain().focus();
+      const chain = currentEditor.chain();
+      if (!removedComment?.parentCommentId || removedComment.content.trim())
+        chain.focus();
       for (const id of commentIdsToDelete) {
         chain.removeCommentId(id);
       }
@@ -1838,7 +1841,6 @@ const RichTextEditorSurface = memo(function RichTextEditorSurface({
 
     const range = findCommentRange(currentEditor, commentId);
     if (range) {
-      currentEditor.commands.focus(undefined, { scrollIntoView: false });
       currentEditor.view.dispatch(
         currentEditor.state.tr.setSelection(
           TextSelection.create(currentEditor.state.doc, range.from, range.to),
@@ -1848,8 +1850,6 @@ const RichTextEditorSurface = memo(function RichTextEditorSurface({
     }
 
     if (!findCommentAnchorElement(currentEditor, commentId)) return;
-
-    currentEditor.commands.focus(undefined, { scrollIntoView: false });
   }, []);
 
   const focusSuggestion = useCallback((changeId: string) => {
@@ -1862,7 +1862,6 @@ const RichTextEditorSurface = memo(function RichTextEditorSurface({
     const range = getCriticChangeRange(currentEditor, changeId);
     if (!range) return;
 
-    currentEditor.commands.focus(undefined, { scrollIntoView: false });
     currentEditor.view.dispatch(
       currentEditor.state.tr.setSelection(
         TextSelection.create(currentEditor.state.doc, range.from, range.to),
@@ -1871,6 +1870,10 @@ const RichTextEditorSurface = memo(function RichTextEditorSurface({
   }, []);
 
   const hasReviewRail = comments.size > 0 || criticChanges.length > 0;
+  const embeddedWorkspace =
+    typeof window !== "undefined" &&
+    new URLSearchParams(window.location.search).get("embed") === "1";
+  const reviewRailIsFlow = layout === "embedded-demo" || embeddedWorkspace;
   const documentShellRef =
     useReviewLayoutShiftAnimation<HTMLDivElement>(hasReviewRail);
   const activeComments = activeCommentIds
@@ -1896,15 +1899,15 @@ const RichTextEditorSurface = memo(function RichTextEditorSurface({
   );
   const contentInsetClass = cn(
     "document-content-inset",
-    layout === "embedded-demo" ? "pb-0" : "pb-24",
+    reviewRailIsFlow ? "pb-0" : "pb-24",
   );
   const fallbackClass = cn(
     "document-comment-fallback mb-4",
-    layout === "embedded-demo" ? "hidden" : "min-[1100px]:hidden",
+    reviewRailIsFlow ? "hidden" : "min-[1100px]:hidden",
   );
   const reviewRailClass = cn(
     "document-comment-rail",
-    layout === "embedded-demo"
+    reviewRailIsFlow
       ? "block px-4 pb-4 min-[900px]:p-0"
       : "review-layout-rail hidden min-[1100px]:block",
   );
@@ -1914,6 +1917,15 @@ const RichTextEditorSurface = memo(function RichTextEditorSurface({
       className="cursor-text bg-transparent"
       data-testid="page-card-rich-text"
     >
+      {reviewRailIsFlow && hasReviewRail ? (
+        <a
+          data-testid="document-review-comments-link"
+          href="#document-review-rail"
+          className="mx-4 mb-1 inline-flex rounded-full border border-[#DFDFDC] bg-white px-3 py-1.5 text-xs font-semibold text-stone-700 shadow-sm transition hover:bg-stone-50 focus:outline-none focus-visible:ring-2 focus-visible:ring-stone-300 dark:border-slate-700 dark:bg-card dark:text-slate-200 dark:hover:bg-slate-800 dark:focus-visible:ring-slate-600"
+        >
+          Jump to review comments
+        </a>
+      ) : null}
       <div
         ref={documentShellRef}
         data-testid="document-page-shell"
@@ -1983,7 +1995,7 @@ const RichTextEditorSurface = memo(function RichTextEditorSurface({
         </div>
         <DocumentReviewRail
           className={reviewRailClass}
-          layout={layout === "embedded-demo" ? "flow" : "anchored"}
+          layout={reviewRailIsFlow ? "flow" : "anchored"}
           testId="document-review-rail"
           commentGroups={commentGroups}
           comments={comments}

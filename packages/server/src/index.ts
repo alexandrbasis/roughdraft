@@ -679,6 +679,15 @@ export function createApp(options: CreateAppOptions = {}): CreateAppResult {
     const target = markdownPathFromRequest(req, res);
     if (!target) return;
 
+    const waitAbortController = new AbortController();
+    const abortWait = () => {
+      if (!res.writableEnded && !res.writableFinished) {
+        waitAbortController.abort();
+      }
+    };
+    req.on("aborted", abortWait);
+    res.on("close", abortWait);
+
     const fromNow = req.body?.fromNow !== false;
     const timeoutSeconds =
       typeof req.body?.timeoutSeconds === "number"
@@ -691,15 +700,22 @@ export function createApp(options: CreateAppOptions = {}): CreateAppResult {
     const afterSequence =
       typeof req.body?.afterSequence === "number" ? req.body.afterSequence : 0;
 
-    const result = await reviewEvents.wait({
-      documentPath: target.absolutePath,
-      afterSequence: fromNow ? reviewEvents.latestSequence() : afterSequence,
-      timeoutMs:
-        timeoutSeconds !== undefined ? timeoutSeconds * 1000 : undefined,
-      batchWindowMs: batchWindowSeconds * 1000,
-    });
+    try {
+      const result = await reviewEvents.wait({
+        documentPath: target.absolutePath,
+        afterSequence: fromNow ? reviewEvents.latestSequence() : afterSequence,
+        signal: waitAbortController.signal,
+        timeoutMs:
+          timeoutSeconds !== undefined ? timeoutSeconds * 1000 : undefined,
+        batchWindowMs: batchWindowSeconds * 1000,
+      });
 
-    res.json(result);
+      if (waitAbortController.signal.aborted || res.writableEnded) return;
+      res.json(result);
+    } finally {
+      req.off("aborted", abortWait);
+      res.off("close", abortWait);
+    }
   });
 
   app.get("/api/review-events/status", (req, res) => {

@@ -1,15 +1,16 @@
 import fs from "node:fs";
 import path from "node:path";
 import { fileURLToPath } from "node:url";
+import {
+  releaseArchive,
+  type ReleasePackageManifest,
+} from "../release-info.mjs";
 
 const __dirname = path.dirname(fileURLToPath(import.meta.url));
 const defaultPackageJsonPath = path.resolve(__dirname, "../../../package.json");
 const DEFAULT_PACKAGE_NAME = "roughdraft";
 
-interface PackageManifest {
-  name?: string;
-  version?: string;
-}
+type PackageManifest = ReleasePackageManifest;
 
 interface ParsedVersion {
   parts: number[];
@@ -30,23 +31,26 @@ interface ResolveUpdateStatusOptions {
   packageName?: string;
 }
 
-function readInstalledPackageInfo(packageJsonPath = defaultPackageJsonPath): {
+export function readInstalledManifest(
+  packageJsonPath = defaultPackageJsonPath,
+): PackageManifest {
+  try {
+    return JSON.parse(
+      fs.readFileSync(packageJsonPath, "utf8"),
+    ) as PackageManifest;
+  } catch {
+    return { name: DEFAULT_PACKAGE_NAME };
+  }
+}
+
+function readInstalledPackageInfo(manifest: PackageManifest): {
   packageName: string;
   currentVersion: string | null;
 } {
-  try {
-    const raw = fs.readFileSync(packageJsonPath, "utf8");
-    const manifest = JSON.parse(raw) as PackageManifest;
-    return {
-      packageName: manifest.name?.trim() || DEFAULT_PACKAGE_NAME,
-      currentVersion: manifest.version?.trim() || null,
-    };
-  } catch {
-    return {
-      packageName: DEFAULT_PACKAGE_NAME,
-      currentVersion: null,
-    };
-  }
+  return {
+    packageName: manifest.name?.trim() || DEFAULT_PACKAGE_NAME,
+    currentVersion: manifest.version?.trim() || null,
+  };
 }
 
 function parseVersion(version: string): ParsedVersion {
@@ -144,16 +148,19 @@ async function fetchLatestVersion(
 export async function resolveUpdateStatus(
   options: ResolveUpdateStatusOptions = {},
 ): Promise<UpdateStatus> {
-  const installedPackageInfo = readInstalledPackageInfo(
-    options.packageJsonPath,
-  );
+  const manifest = readInstalledManifest(options.packageJsonPath);
+  const installedPackageInfo = readInstalledPackageInfo(manifest);
   const packageName =
     options.packageName?.trim() || installedPackageInfo.packageName;
   const currentVersion = installedPackageInfo.currentVersion;
-  const latestVersion = await fetchLatestVersion(
-    packageName,
-    options.fetchImpl ?? fetch,
-  );
+  const fetchImpl = options.fetchImpl ?? fetch;
+  const archive = releaseArchive({ ...manifest, name: packageName });
+  const latestArchive = archive
+    ? await fetchLatestRelease({ ...manifest, name: packageName }, fetchImpl)
+    : null;
+  const latestVersion = archive
+    ? (latestArchive?.version ?? null)
+    : await fetchLatestVersion(packageName, fetchImpl);
 
   return {
     packageName,
@@ -163,6 +170,70 @@ export async function resolveUpdateStatus(
       !!currentVersion &&
       !!latestVersion &&
       compareVersions(currentVersion, latestVersion) < 0,
-    updateCommand: `npm i -g ${packageName}@latest`,
+    updateCommand: archive
+      ? `npm install -g ${(latestArchive ?? archive).url}`
+      : `npm i -g ${packageName}@latest`,
   };
+}
+
+interface GitHubRelease {
+  tag_name?: string;
+  draft?: boolean;
+  prerelease?: boolean;
+  assets?: { name?: string; state?: string; browser_download_url?: string }[];
+}
+
+async function fetchLatestRelease(
+  manifest: PackageManifest,
+  fetchImpl: typeof fetch,
+) {
+  const installed = releaseArchive(manifest);
+  if (!installed) return null;
+  try {
+    // /latest excludes prereleases; the fork uses an explicit prerelease channel.
+    const response = await fetchImpl(
+      `https://api.github.com/repos/${installed.repository}/releases?per_page=100`,
+      {
+        headers: { accept: "application/vnd.github+json" },
+        signal: AbortSignal.timeout(1500),
+      },
+    );
+    if (!response.ok) return null;
+    const releases: unknown = await response.json();
+    if (!Array.isArray(releases)) return null;
+    const channel = parseVersion(installed.version).prerelease[0];
+    const candidates = (releases as GitHubRelease[]).flatMap((release) => {
+      if (!release || release.draft || typeof release.tag_name !== "string")
+        return [];
+      const candidate = releaseArchive(
+        manifest,
+        release.tag_name.replace(/^v/, ""),
+      );
+      if (!candidate || candidate.tag !== release.tag_name) return [];
+      const candidateChannel = parseVersion(candidate.version).prerelease[0];
+      if (
+        (release.prerelease || candidateChannel) &&
+        (!channel || candidateChannel !== channel)
+      )
+        return [];
+      if (
+        !Array.isArray(release.assets) ||
+        !release.assets.some(
+          (asset) =>
+            asset?.name === candidate.name &&
+            asset.state === "uploaded" &&
+            asset.browser_download_url === candidate.url,
+        )
+      )
+        return [];
+      return [candidate];
+    });
+    return (
+      candidates.sort((left, right) =>
+        compareVersions(right.version, left.version),
+      )[0] ?? null
+    );
+  } catch {
+    return null;
+  }
 }

@@ -9,12 +9,12 @@ license and stores comments and suggestions in the Markdown file.
 Use Node.js 22 or newer. Install the built package from this fork's GitHub release:
 
 ```bash
-npm install -g https://github.com/alexandrbasis/roughdraft/releases/download/v0.1.11-basis.1/alexandrbasis-roughdraft-0.1.11-basis.1.tgz
+npm install -g https://github.com/alexandrbasis/roughdraft/releases/download/v0.1.12-basis.1/alexandrbasis-roughdraft-0.1.12-basis.1.tgz
 roughdraft --version
 roughdraft open /absolute/path/to/file.md
 ```
 
-The version should be `0.1.11-basis.1`. The package is named
+The version should be `0.1.12-basis.1`. The package is named
 `@alexandrbasis/roughdraft`; the executable remains `roughdraft`. Installing it
 globally shares the executable name with the original package.
 The unscoped npm package `roughdraft` installs the original upstream version.
@@ -40,6 +40,14 @@ See [fork provenance and verification](FORK.md) for the upstream reports and rel
 - Add `&embed=1` to a document URL for a compact panel layout. The same editor,
   comments, save status, and review handoff remain available. Try `/preview?embed=1`
   without opening a file.
+
+- Short transport interruptions retry with the same review-event cursor; a
+  disconnected review watcher is removed from the server queue.
+- Literal HTML examples inside fenced code survive neighboring edits and reloads.
+- Comment threads can be opened from the keyboard. Reply cancellation restores
+  focus, and narrow panels offer a direct jump to discussions.
+- Update notices use this fork's GitHub release archives. `pnpm upstream:check`
+  checks the upstream base, and version tags publish only a tested package.
 
 ## What is this?
 Roughdraft is a local-first markdown editor and viewer that runs on your computer.

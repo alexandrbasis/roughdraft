@@ -1,3 +1,4 @@
+import { agentSetupPrompt } from "../release-info.mjs";
 import crypto from "node:crypto";
 import fs from "node:fs";
 import os from "node:os";
@@ -17,14 +18,17 @@ import {
 } from "./network.js";
 import { findAvailablePort } from "./ports.js";
 import { waitForReviewEvents } from "./review-events-watch.js";
-import { resolveUpdateStatus, type UpdateStatus } from "./update-status.js";
+import {
+  readInstalledManifest,
+  resolveUpdateStatus,
+  type UpdateStatus,
+} from "./update-status.js";
 
 const AGENT_SETUP_URL =
   "https://github.com/alexandrbasis/roughdraft#agent-setup";
 const ROUGHDRAFT_FLAVORED_MARKDOWN_SPEC_URL =
   "https://roughdraft.md/spec/roughdraft-flavored-markdown.md";
-const AGENT_SETUP_PROMPT =
-  "Install the Basis fork of Roughdraft using `npm install -g https://github.com/alexandrbasis/roughdraft/releases/download/v0.1.11-basis.1/alexandrbasis-roughdraft-0.1.11-basis.1.tgz`, then read `roughdraft help agent` and set yourself up to use it.";
+const AGENT_SETUP_PROMPT = agentSetupPrompt(readInstalledManifest());
 const STATUS_PATH = "/api/status";
 const STATUS_TIMEOUT_MS = 750;
 const SERVER_WAIT_ATTEMPTS = 40;

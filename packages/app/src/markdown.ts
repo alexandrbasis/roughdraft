@@ -56,14 +56,27 @@ function createRawMarkdownBlock(markdown: string): string {
 }
 
 function protectRawHtmlBlocks(markdown: string): string {
-  return markdown
-    .replace(
-      /^[ \t]*<details\b[\s\S]*?<\/details>[ \t]*(?:\r?\n|$)/gim,
-      (raw) => createRawMarkdownBlock(raw),
-    )
-    .replace(/^[ \t]*<!--[\s\S]*?-->[ \t]*(?:\r?\n|$)/gm, (raw) =>
-      createRawMarkdownBlock(raw),
-    );
+  // Marked owns CommonMark fence and container boundaries, including indented
+  // code and fences that end with their containing blockquote.
+  const source = markdown.replace(/\r\n?/g, "\n");
+  const codeRanges: Array<{ start: number; end: number }> = [];
+  let cursor = 0;
+  for (const token of marked.lexer(source)) {
+    // Reference definitions need not appear in the token array. Find each raw
+    // token from the preceding boundary instead of assuming contiguous tokens.
+    const start = source.indexOf(token.raw, cursor);
+    if (start < 0) continue;
+    const end = start + token.raw.length;
+    if (token.type === "code") codeRanges.push({ start, end });
+    cursor = end;
+  }
+  return source.replace(
+    /^[ \t]*(?:<details\b[\s\S]*?<\/details>|<!--[\s\S]*?-->)[ \t]*(?:\n|$)/gim,
+    (raw, offset: number) =>
+      codeRanges.some(({ start, end }) => offset >= start && offset < end)
+        ? raw
+        : createRawMarkdownBlock(raw),
+  );
 }
 
 function protectIndentedCodeAfterLists(markdown: string): string {

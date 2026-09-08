@@ -31,16 +31,69 @@ The workspace uses pnpm's
 available since pnpm 10.26. The esbuild install script is enabled; the optional
 msw install script is disabled.
 
-## Release verification
+## Keeping the fork current
 
-Run these checks before attaching a built archive to a release:
+Run `pnpm upstream:check` from this checkout. It fetches upstream's current main
+commit and compares it with this checkout without merging or changing files.
+Review upstream changes on a separate branch, then run the checks below before
+opening a pull request in this fork. Never reset fork main to upstream main:
+that would discard fork changes.
+
+The installed fork checks this repository's GitHub releases for updates. It only
+recommends a published release with the expected uploaded package archive.
+Prerelease installations follow their channel (for example `basis`); stable
+installations do not receive prereleases. Offline or rate-limited checks leave
+the editor usable. The notice prints an explicit installation command; it does
+not replace the running CLI automatically.
+
+The updater uses the GitHub [list releases API](https://docs.github.com/en/rest/releases/releases#list-releases),
+because GitHub's latest-release endpoint excludes prereleases.
+
+## Releasing
+
+Set the root `package.json` version and update the README install example. The
+CLI and browser setup prompts derive their version and archive URL from the
+manifest. Keep the lockfile unchanged unless dependencies change.
 
 ```bash
 pnpm check
 pnpm test:smoke
-pnpm test:package
+pnpm test:review
+pnpm test:coverage
+pnpm release:prepare
+pnpm test:package --tarball /absolute/path/printed/by/release-prepare.tgz
 ```
 
-Also run the dedicated browser scenarios for annotated Markdown, endmatter
-replies, and embed mode. A real CLI wait longer than five minutes exercises the
-transport timeout boundary beyond the fast automated tests.
+`release:prepare` writes the archive, `SHA256SUMS.txt`, and a manifest containing
+the commit and package identity under `.context/release/`. Local receipts flag
+uncommitted changes. Release automation rejects a dirty checkout or a tag that
+does not match the package version.
+
+After the pull request is checked and merged into this fork, tag the merged
+commit as `v<package-version>` and push that tag. The **Release fork** workflow
+runs repository, browser, and coverage checks; tests the same archive through
+isolated npm and pnpm installations; and publishes it with its checksum and
+commit manifest. A failed verification cannot reach the publish job. Existing
+releases are not overwritten on a retry.
+
+Tags ending in the Basis channel (such as `v0.1.12-basis.1`) trigger this workflow.
+The original npm publication workflow runs only in `Lex-Inc/roughdraft`.
+
+Download both the archive and `SHA256SUMS.txt` from the release into one directory,
+then verify before installing:
+
+```bash
+shasum -a 256 -c SHA256SUMS.txt
+npm install -g ./alexandrbasis-roughdraft-0.1.12-basis.1.tgz
+roughdraft --version
+```
+
+The verification suite exercises two rounds of CLI/MCP review, interrupted
+connections, annotated Markdown, YAML replies, keyboard operation, and embedded
+panels. The first fork release also passed a real CLI wait longer than five
+minutes; bounded timeout tests cover that behavior in routine CI.
+
+Markdown checks cover metadata, lists and quotes, tables, raw HTML, code, Unicode,
+and annotations. They assert content preservation and supported editing behavior;
+rich-text round trips can normalize body formatting and line endings. Fence
+boundaries follow the parser and the [CommonMark rules](https://spec.commonmark.org/0.31.2/#fenced-code-blocks).
