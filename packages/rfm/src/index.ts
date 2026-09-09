@@ -158,6 +158,7 @@ export function validateRoughdraftMarkdown(
   const endmatter = parseRoughdraftEndmatter(markdown);
   const diagnostics: RfmDiagnostic[] = [];
   const ids = new Map<string, IdReference>();
+  const referencedBodyIds = new Set<string>();
   const replies: ReplyReference[] = [];
   const summary: RfmValidationSummary = {
     comments: 0,
@@ -291,6 +292,14 @@ export function validateRoughdraftMarkdown(
     }
   };
 
+  const validateComment = (parsed: ParsedComment) => {
+    validateMetadata(parsed.metadata, "comment", parsed.offset);
+    if (referencedCommentBody(parsed, endmatter) !== undefined) {
+      const id = parsed.metadata?.attrs.get("id");
+      if (id) referencedBodyIds.add(id);
+    }
+  };
+
   let offset = 0;
   const scanEndOffset = endmatter.offset ?? markdown.length;
   let fence: FenceState | null = null;
@@ -336,7 +345,7 @@ export function validateRoughdraftMarkdown(
         if (!parsed) break;
         summary.comments += 1;
         anchoredComments += 1;
-        validateMetadata(parsed.metadata, "comment", nextOffset);
+        validateComment(parsed);
         nextOffset = parsed.endOffset;
       }
 
@@ -348,7 +357,7 @@ export function validateRoughdraftMarkdown(
       const parsed = parseComment(markdown, offset, addDiagnostic);
       if (parsed) {
         summary.comments += 1;
-        validateMetadata(parsed.metadata, "comment", offset);
+        validateComment(parsed);
         offset = parsed.endOffset;
         continue;
       }
@@ -367,6 +376,17 @@ export function validateRoughdraftMarkdown(
 
   for (const [id, entry] of endmatter.comments) {
     if (!entry.body && !entry.re) continue;
+    // An empty inline marker is the anchor for this YAML body, not a second
+    // comment. Metadata was validated at the marker's source location.
+    if (referencedBodyIds.has(id)) {
+      if (entry.re)
+        replies.push({
+          id,
+          parentId: String(entry.re),
+          offset: endmatter.offset ?? 0,
+        });
+      continue;
+    }
 
     const existing = ids.get(id);
     if (existing) {
@@ -453,12 +473,15 @@ export function extractRoughdraftReviewIndex(markdown: string): RfmReviewIndex {
   const validation = validateRoughdraftMarkdown(markdown);
   const endmatter = parseRoughdraftEndmatter(markdown);
   const items: RfmReviewItem[] = [];
+  const referencedBodyIds = new Set<string>();
   const noopDiagnostic = () => {};
 
   const addComment = (parsed: ParsedComment, anchorText?: string) => {
     const attrs = hydrateMetadataAttrs(parsed.metadata, endmatter, "comment");
     const id = attrs.get("id") ?? `comment-${parsed.offset.toString()}`;
     const parentId = attrs.get("re") ?? null;
+    const body = referencedCommentBody(parsed, endmatter);
+    if (body !== undefined) referencedBodyIds.add(id);
 
     items.push({
       id,
@@ -467,7 +490,7 @@ export function extractRoughdraftReviewIndex(markdown: string): RfmReviewIndex {
       author: attrs.get("by") ?? null,
       createdAt: attrs.get("at") ?? null,
       status: attrs.get("status") ?? null,
-      text: parsed.content,
+      text: body ?? parsed.content,
       anchorText,
       offset: parsed.offset,
       endOffset: parsed.endOffset,
@@ -567,7 +590,7 @@ export function extractRoughdraftReviewIndex(markdown: string): RfmReviewIndex {
   }
 
   for (const [id, entry] of endmatter.comments) {
-    if (!entry.body) continue;
+    if (!entry.body || referencedBodyIds.has(id)) continue;
 
     items.push({
       id,
@@ -1197,6 +1220,18 @@ function isPlainObject(value: unknown): value is Record<string, unknown> {
   return Boolean(value) && typeof value === "object" && !Array.isArray(value);
 }
 
+function referencedCommentBody(
+  comment: ParsedComment,
+  endmatter: RoughdraftEndmatter,
+): string | undefined {
+  if (comment.content !== "" || comment.metadata?.kind !== "reference")
+    return undefined;
+  const body = endmatter.comments.get(
+    comment.metadata.attrs.get("id") ?? "",
+  )?.body;
+  return typeof body === "string" ? body : undefined;
+}
+
 function hydrateMetadataAttrs(
   metadata: Metadata | null,
   endmatter: RoughdraftEndmatter,
@@ -1360,4 +1395,5 @@ function findCanonicalMetadataStart(
 function isValidDateTime(value: string): boolean {
   return dateTimePattern.test(value) && !Number.isNaN(Date.parse(value));
 }
+
 import { parse as parseYaml, stringify as stringifyYaml } from "yaml";

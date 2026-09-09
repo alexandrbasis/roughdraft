@@ -196,6 +196,7 @@ export function groupCommentAnchorMeasurements(
 export function buildCommentThreadRailItems(
   groups: CommentGroupAnchor[],
   comments: ReadonlyMap<string, CriticComment>,
+  options?: { includeDocumentComments?: boolean },
 ): CommentThreadRailItem[] {
   const items: CommentThreadRailItem[] = [];
 
@@ -231,6 +232,35 @@ export function buildCommentThreadRailItems(
         anchorBottom: group.anchorBottom,
       });
     }
+  }
+
+  if (!options?.includeDocumentComments) return items;
+
+  // Overall review comments have no DOM anchor. Place them after the anchored
+  // threads so they remain visible and can receive replies in the same rail.
+  const visibleRootIds = new Set(items.map((item) => item.rootCommentId));
+  const lastAnchorBottom = groups.reduce(
+    (bottom, group) => Math.max(bottom, group.anchorBottom),
+    0,
+  );
+  for (const comment of comments.values()) {
+    if (
+      comment.scope !== "document" ||
+      comment.parentCommentId ||
+      visibleRootIds.has(comment.id)
+    )
+      continue;
+    items.push({
+      key: comment.id,
+      anchorGroupKey: `document:${comment.id}`,
+      rootCommentId: comment.id,
+      commentIds: [
+        comment.id,
+        ...getCommentDescendantIds(comment.id, comments),
+      ],
+      anchorTop: lastAnchorBottom,
+      anchorBottom: lastAnchorBottom,
+    });
   }
 
   return items;

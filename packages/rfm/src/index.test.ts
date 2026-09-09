@@ -1,7 +1,7 @@
 import { describe, expect, it } from "vitest";
 import {
-  appendRoughdraftReply,
   appendRoughdraftDocumentComment,
+  appendRoughdraftReply,
   extractRoughdraftReviewIndex,
   markRoughdraftResolved,
   validateRoughdraftMarkdown,
@@ -12,6 +12,72 @@ function codes(markdown: string): string[] {
     (diagnostic) => diagnostic.code,
   );
 }
+
+describe("anchored comment bodies in YAML", () => {
+  const body =
+    "Screenshot of the spacing:\n\n![screen.png](./.roughdraft-assets/screen.png)";
+  const markdown = [
+    "Check {==this layout==}{>><<}{#c1}.",
+    "",
+    "---",
+    "comments:",
+    "  c1:",
+    "    body: |-",
+    "      Screenshot of the spacing:",
+    "",
+    "      ![screen.png](./.roughdraft-assets/screen.png)",
+    "    by: user",
+    '    at: "2026-09-09T08:00:00.000Z"',
+    "",
+  ].join("\n");
+
+  it("validates and extracts one anchored screenshot comment", () => {
+    expect(validateRoughdraftMarkdown(markdown)).toMatchObject({
+      ok: true,
+      summary: { comments: 1 },
+    });
+    const index = extractRoughdraftReviewIndex(markdown);
+    expect(index.items).toHaveLength(1);
+    expect(index.items[0]).toMatchObject({
+      id: "c1",
+      kind: "comment",
+      text: body,
+      anchorText: "this layout",
+    });
+  });
+
+  it("keeps the screenshot and anchor when an agent replies and resolves it", () => {
+    const replied = appendRoughdraftReply(markdown, {
+      parentId: "c1",
+      message: "Fixed spacing.",
+      author: "AI",
+      at: "2026-09-09T08:01:00.000Z",
+    });
+    const resolved = markRoughdraftResolved(replied, { targetId: "c1" });
+    const index = extractRoughdraftReviewIndex(resolved);
+    expect(validateRoughdraftMarkdown(resolved).ok).toBe(true);
+    expect(index.items).toHaveLength(2);
+    expect(index.items[0]).toMatchObject({
+      id: "c1",
+      text: body,
+      anchorText: "this layout",
+      status: "resolved",
+    });
+    expect(index.items[1]).toMatchObject({
+      parentId: "c1",
+      text: "Fixed spacing.",
+    });
+  });
+
+  it("still rejects two bodies or two inline anchors with the same ID", () => {
+    expect(
+      codes(markdown.replace("{>><<}", "{>>Conflicting body<<}")),
+    ).toContain("duplicate-id");
+    expect(
+      codes(markdown.replace("Check ", "Again {>><<}{#c1}. Check ")),
+    ).toContain("duplicate-id");
+  });
+});
 
 describe("validateRoughdraftMarkdown", () => {
   it("accepts valid comments, anchored comments, and suggestions", () => {

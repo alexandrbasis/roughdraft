@@ -1421,6 +1421,16 @@ export function createApp(options: CreateAppOptions = {}): CreateAppResult {
       return;
     }
 
+    // Uploaded assets live in a managed hidden directory. Scope sendFile to
+    // that directory so its default dotfile policy still protects other files.
+    const assetsDir = path.join(projectDir, ".roughdraft-assets");
+    if (path.dirname(absolutePath) === assetsDir) {
+      res.sendFile(path.basename(absolutePath), {
+        root: assetsDir,
+        dotfiles: "deny",
+      });
+      return;
+    }
     res.sendFile(absolutePath);
   });
 

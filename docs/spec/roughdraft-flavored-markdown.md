@@ -164,7 +164,25 @@ comments:
     at: "2026-04-28T12:00:00.000Z"
 ```
 
-Root comment bodies and suggestion text stay inline so their anchors remain portable. Replies live entirely in endmatter because their `re` field already points at a parent id:
+Short root comment bodies and suggestion text stay inline. A root comment containing multiple paragraphs or an image uses an empty comment marker at its anchor and stores its full body in YAML. Readers MUST resolve that empty marker from `comments.<id>.body` and count it once. A nonempty inline body and a YAML body for the same id remain a duplicate-id error.
+
+```markdown
+Check {==this layout==}{>><<}{#c1}.
+
+---
+comments:
+  c1:
+    body: |-
+      Screenshot of the spacing:
+
+      ![screen.png](./.roughdraft-assets/screen.png)
+    by: user
+    at: "2026-09-09T08:00:00.000Z"
+```
+
+Images use ordinary Markdown references. Local image files must accompany the document when it is moved or shared. The app renders image previews within comments; image references do not insert images into the document's prose.
+
+Replies live entirely in endmatter because their `re` field already points at a parent id:
 
 ```markdown
 Please revisit {==this sentence==}{>>Needs a source.<<}{#c1}.

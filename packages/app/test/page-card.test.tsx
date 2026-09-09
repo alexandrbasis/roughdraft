@@ -1629,6 +1629,34 @@ describe("PageCard editor integration", () => {
     );
   });
 
+  it("opens a reply to an overall handoff comment without a document anchor", async () => {
+    const rendered = await renderPageCard({
+      page: {
+        id: "doc-handoff-reply",
+        title: "Handoff feedback",
+        content:
+          '# Draft\n\n---\ncomments:\n  c1:\n    body: Overall feedback.\n    by: user\n    at: "2026-09-09T08:00:00.000Z"\n',
+      },
+    });
+    await act(async () => {
+      getByTestId<HTMLDivElement>(
+        rendered.container,
+        "comment-thread-c1",
+      ).click();
+    });
+    await act(async () => {
+      getByTestId<HTMLButtonElement>(
+        rendered.container,
+        "comment-rail-c1-action-reply",
+      ).click();
+    });
+    await flushReact();
+
+    expect(
+      queryByTestId(rendered.container, "comment-rail-c2-editor"),
+    ).not.toBeNull();
+  });
+
   it("opens a reply to the root comment when r is pressed in a focused thread", async () => {
     const rendered = await renderPageCard({
       page: {

@@ -241,6 +241,7 @@ export function DocumentReviewRail({
           }))
           .filter((group) => group.commentIds.length > 0),
         comments,
+        { includeDocumentComments: true },
       )
         .map((item) => {
           const visibleComments = item.commentIds

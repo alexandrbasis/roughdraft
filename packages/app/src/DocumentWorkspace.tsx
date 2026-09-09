@@ -29,7 +29,7 @@ import {
   SelectItemText,
   SelectTrigger,
 } from "./components/ui/select";
-import { Textarea } from "./components/ui/textarea";
+import { CommentComposer } from "./CommentComposer";
 import {
   Tooltip,
   TooltipContent,
@@ -469,6 +469,7 @@ export function DocumentWorkspace({
   const [copiedFileAction, setCopiedFileAction] =
     useState<FileCopyAction | null>(null);
   const [overallComment, setOverallComment] = useState("");
+  const [overallCommentUploading, setOverallCommentUploading] = useState(false);
   const [documentChangedSinceOpen, setDocumentChangedSinceOpen] =
     useState(false);
   const [draftRecoveryState, setDraftRecoveryState] =
@@ -1402,6 +1403,7 @@ export function DocumentWorkspace({
       data-document-embed={embedded ? "true" : undefined}
       className={cn(
         "min-h-0 flex-1 overflow-y-auto px-8 pb-8 sm:px-12",
+        embedded && "max-[640px]:mb-14",
         hasTopNotice ? "pt-40 sm:pt-28" : "pt-10",
       )}
     >
@@ -1599,7 +1601,9 @@ export function DocumentWorkspace({
           {showReviewHandoffButton ? (
             <Popover
               open={reviewHandoffPopoverOpen}
-              onOpenChange={setReviewHandoffPopoverOpen}
+              onOpenChange={(open) => {
+                if (!overallCommentUploading) setReviewHandoffPopoverOpen(open);
+              }}
             >
               <div
                 data-testid="review-handoff-split-button"
@@ -1616,7 +1620,9 @@ export function DocumentWorkspace({
                   data-testid="review-handoff-button"
                   size="lg"
                   className="h-9 rounded-r-none rounded-l-[7px] border-0 bg-[#2B2420] px-3 text-sm font-bold text-white hover:bg-[#3a322b] focus-visible:ring-slate-300 disabled:opacity-100 dark:bg-slate-700 dark:text-slate-100 dark:hover:bg-slate-600 dark:focus-visible:ring-slate-600"
-                  disabled={reviewHandoffButtonDisabled}
+                  disabled={
+                    reviewHandoffButtonDisabled || overallCommentUploading
+                  }
                   aria-disabled={reviewHandoffButtonDisabled || undefined}
                   onClick={() => {
                     if (reviewHandoffFinished) {
@@ -1676,21 +1682,22 @@ export function DocumentWorkspace({
                     className="space-y-3"
                     onSubmit={(event) => {
                       event.preventDefault();
+                      if (overallCommentUploading) return;
                       void handleCompleteReview({
                         overallComment: trimmedOverallComment,
                       });
                     }}
                   >
                     <div>
-                      <Textarea
+                      <CommentComposer
                         id="review-handoff-overall-comment"
                         data-testid="review-handoff-overall-comment"
                         aria-label="Overall comment"
                         placeholder="Overall comment"
                         value={overallComment}
-                        onChange={(event) =>
-                          setOverallComment(event.currentTarget.value)
-                        }
+                        backend={backend}
+                        onUploadingChange={setOverallCommentUploading}
+                        onChange={setOverallComment}
                         maxLength={4000}
                         rows={4}
                         className="min-h-24 resize-none"
@@ -1701,7 +1708,9 @@ export function DocumentWorkspace({
                       data-testid="review-handoff-submit-comment"
                       size="lg"
                       className="w-full rounded-[7px] bg-black text-sm font-bold text-white hover:bg-black/85 focus-visible:ring-black/25 dark:bg-white dark:text-black dark:hover:bg-white/90"
-                      disabled={!trimmedOverallComment}
+                      disabled={
+                        !trimmedOverallComment || overallCommentUploading
+                      }
                     >
                       <CheckCheck className="size-4" />
                       Submit with comment

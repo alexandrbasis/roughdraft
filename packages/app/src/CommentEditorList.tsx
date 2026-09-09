@@ -11,7 +11,8 @@ import {
   useState,
 } from "react";
 import { Button } from "./components/ui/button";
-import { Textarea } from "./components/ui/textarea";
+import { CommentBody } from "./CommentBody";
+import { CommentComposer } from "./CommentComposer";
 import {
   Tooltip,
   TooltipContent,
@@ -406,9 +407,11 @@ function CommentActionButton({
   tabIndex,
   buttonRef,
   className,
+  disabled,
   onClick,
 }: {
   label: string;
+  disabled?: boolean;
   testId?: string;
   tone?: "neutral" | "danger";
   presentation?: "default" | "popover";
@@ -423,6 +426,7 @@ function CommentActionButton({
     <Button
       type="button"
       ref={buttonRef}
+      disabled={disabled}
       tabIndex={tabIndex}
       aria-label={compact ? label : undefined}
       data-testid={testId}
@@ -489,6 +493,7 @@ function CommentThreadNode({
   onChangeDraft,
 }: CommentThreadNodeProps) {
   const { comment, replies } = thread;
+  const [uploading, setUploading] = useState(false);
   const hasReplies = replies.length > 0;
   const isRootThread = depth === 0;
   const isSelected = comment.id === selectedCommentId;
@@ -523,7 +528,11 @@ function CommentThreadNode({
       ? "bg-[#DED8CE]/90 dark:bg-slate-600/90"
       : "bg-[#DED8CE]/85 dark:bg-slate-600/85";
   const hasCommentContent = comment.content.trim().length > 0;
-  const defaultContent = hasCommentContent ? comment.content : "Empty comment";
+  const defaultContent = hasCommentContent ? (
+    <CommentBody content={comment.content} />
+  ) : (
+    "Empty comment"
+  );
   const isNewRootCommentDraft =
     isEditing &&
     depth === 0 &&
@@ -754,7 +763,7 @@ function CommentThreadNode({
                 {isEditing ? null : renderedContent}
               </div>
               {isEditing ? (
-                <Textarea
+                <CommentComposer
                   data-testid={`comment-${variant}-${comment.id}-editor`}
                   ref={(node) => {
                     if (node) {
@@ -764,6 +773,7 @@ function CommentThreadNode({
                     }
                   }}
                   value={draftContent}
+                  onUploadingChange={setUploading}
                   placeholder={
                     depth === 0 ? "Add your comment" : "Write a reply"
                   }
@@ -801,8 +811,8 @@ function CommentThreadNode({
                   onFocus={() => {
                     onSelectComment?.(comment.id);
                   }}
-                  onChange={(event) => {
-                    onChangeDraft(comment.id, event.target.value);
+                  onChange={(nextContent) => {
+                    onChangeDraft(comment.id, nextContent);
                   }}
                 />
               ) : null}
@@ -811,6 +821,7 @@ function CommentThreadNode({
                   <CommentActionButton
                     key={action.key}
                     label={action.label}
+                    disabled={uploading}
                     testId={`comment-${variant}-${comment.id}-action-${action.key}`}
                     tone={action.tone}
                     presentation={action.presentation}

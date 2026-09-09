@@ -6,6 +6,8 @@ license and stores comments and suggestions in the Markdown file.
 
 Appearance follows your system by default and updates while the page is open. Use the appearance menu at the bottom left to choose **System**, **Light**, or **Dark**. An explicit choice is saved in this browser and shared across its Roughdraft tabs.
 
+In a local review, paste a screenshot into a comment or reply, or choose **Attach image**. The image is saved in `.roughdraft-assets` beside the document, with a Markdown image reference in the comment. Click its thumbnail to open the full image. Keep the asset folder with the Markdown file when moving or sharing a review. Removing an image from a comment removes its reference; the file remains on disk for other references and review history. Remote document sessions do not support image uploads.
+
 ## Install this fork
 
 Use Node.js 22.13 or newer. Install the built package from this fork's GitHub release:

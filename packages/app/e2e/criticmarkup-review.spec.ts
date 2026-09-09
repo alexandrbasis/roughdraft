@@ -114,25 +114,35 @@ test.describe("CriticMarkup review flows", () => {
     await selectRichText(page, "target text");
     await page.getByTestId("selection-menu-action-comment").waitFor();
 
-    const addSamplesPromise = sampleReviewLayoutAnimation(page);
-    await page.getByTestId("selection-menu-action-comment").click();
-    const addSamples = await addSamplesPromise;
+    const addSamples = await sampleReviewLayoutAnimation(
+      page,
+      "selection-menu-action-comment",
+    );
 
-    expect(hasAnimatedReviewLayout(addSamples)).toBe(true);
+    expect(
+      hasAnimatedReviewLayout(addSamples),
+      JSON.stringify(addSamples),
+    ).toBe(true);
     await page
       .getByTestId("comment-rail-c1-editor")
       .fill("Clarify this phrase.");
     await page.getByTestId("comment-rail-c1-action-save").click();
 
     await page.getByTestId("comment-rail-c1-action-delete-thread").waitFor();
-    const removeSamplesPromise = sampleReviewLayoutAnimation(page);
-    await page.getByTestId("comment-rail-c1-action-delete-thread").click();
-    const removeSamples = await removeSamplesPromise;
+    const removeSamples = await sampleReviewLayoutAnimation(
+      page,
+      "comment-rail-c1-action-delete-thread",
+    );
 
-    expect(hasAnimatedReviewLayout(removeSamples)).toBe(true);
+    expect(
+      hasAnimatedReviewLayout(removeSamples),
+      JSON.stringify(removeSamples),
+    ).toBe(true);
 
     logE2eEvent("criticmarkup.layout-animation", {
       file: "layout-animation.md",
+      addSamples,
+      removeSamples,
     });
   });
 
@@ -218,8 +228,12 @@ type ReviewLayoutAnimationSample = {
   headerTranslateX: number;
 };
 
-async function sampleReviewLayoutAnimation(page: Page) {
-  return page.evaluate(async () => {
+async function sampleReviewLayoutAnimation(page: Page, actionTestId: string) {
+  // Arm in the browser before clicking, but start the window on the actual
+  // click. Playwright's actionability checks can outlast the animation itself.
+  const sampler = await page.evaluateHandle((testId) => {
+    const action = document.querySelector(`[data-testid="${testId}"]`);
+    if (!action) throw new Error(`Animation trigger is missing: ${testId}`);
     const readTranslateX = (element: Element | null) => {
       if (!(element instanceof HTMLElement)) return 0;
       const transform = getComputedStyle(element).transform;
@@ -227,30 +241,45 @@ async function sampleReviewLayoutAnimation(page: Page) {
       return new DOMMatrixReadOnly(transform).m41;
     };
     const samples: ReviewLayoutAnimationSample[] = [];
-    const start = performance.now();
-
-    while (performance.now() - start < 500) {
-      const shell = document.querySelector(
-        '[data-testid="document-page-shell"]',
+    const result = new Promise<ReviewLayoutAnimationSample[]>((resolve) => {
+      action.addEventListener(
+        "click",
+        () => {
+          const start = performance.now();
+          const sample = () => {
+            const shell = document.querySelector(
+              '[data-testid="document-page-shell"]',
+            );
+            const header = document.querySelector(
+              '[data-testid="document-page-header"]',
+            );
+            samples.push({
+              shellAnimating:
+                shell instanceof HTMLElement &&
+                shell.classList.contains("review-layout-grid--animating"),
+              headerAnimating:
+                header instanceof HTMLElement &&
+                header.classList.contains("review-layout-grid--animating"),
+              shellTranslateX: readTranslateX(shell),
+              headerTranslateX: readTranslateX(header),
+            });
+            if (performance.now() - start < 500) requestAnimationFrame(sample);
+            else resolve(samples);
+          };
+          sample();
+        },
+        { capture: true, once: true },
       );
-      const header = document.querySelector(
-        '[data-testid="document-page-header"]',
-      );
-      samples.push({
-        shellAnimating:
-          shell instanceof HTMLElement &&
-          shell.classList.contains("review-layout-grid--animating"),
-        headerAnimating:
-          header instanceof HTMLElement &&
-          header.classList.contains("review-layout-grid--animating"),
-        shellTranslateX: readTranslateX(shell),
-        headerTranslateX: readTranslateX(header),
-      });
-      await new Promise((resolve) => requestAnimationFrame(resolve));
-    }
+    });
+    return { result };
+  }, actionTestId);
 
-    return samples;
-  });
+  try {
+    await page.getByTestId(actionTestId).click();
+    return await sampler.evaluate(async ({ result }) => await result);
+  } finally {
+    await sampler.dispose();
+  }
 }
 
 function hasAnimatedReviewLayout(samples: ReviewLayoutAnimationSample[]) {

@@ -3,8 +3,17 @@ import type { Mark as ProseMirrorMark } from "@tiptap/pm/model";
 import { TextSelection } from "@tiptap/pm/state";
 import type { Editor } from "@tiptap/react";
 import { EditorContent, useEditor, useEditorState } from "@tiptap/react";
-import { memo, useCallback, useEffect, useMemo, useRef, useState } from "react";
+import {
+  memo,
+  useCallback,
+  useContext,
+  useEffect,
+  useMemo,
+  useRef,
+  useState,
+} from "react";
 
+import { CommentAssetContext, CommentUploadContext } from "./CommentBody";
 import { CommentEditorList } from "./CommentEditorList";
 import {
   type CriticChangeAttrs,
@@ -20,7 +29,11 @@ import {
   type CriticChangeRailItem,
   DocumentReviewRail,
 } from "./DocumentReviewRail";
-import { getPreferredCommentId, parseCommentIds } from "./document-comments";
+import {
+  getPreferredCommentId,
+  getRootThreadIdForCommentId,
+  parseCommentIds,
+} from "./document-comments";
 import { EditorContextMenu } from "./EditorContextMenu";
 import {
   commentHighlightPluginKey,
@@ -632,6 +645,7 @@ const RichTextEditorSurface = memo(function RichTextEditorSurface({
     string | null
   >(null);
   const [newCommentDraftIds, setNewCommentDraftIds] = useState<string[]>([]);
+  const commentUploadCount = useContext(CommentUploadContext);
 
   const resolveFileUrl = useCallback(
     (path: string) => backend.resolveFileUrl(path),
@@ -1456,6 +1470,7 @@ const RichTextEditorSurface = memo(function RichTextEditorSurface({
     const handleDocumentPointerDown = (event: PointerEvent) => {
       if (!selectedCommentIdRef.current && !selectedChangeIdRef.current) return;
       if (!shouldDismissCommentThread(event.target)) return;
+      if (commentUploadCount && commentUploadCount.current > 0) return;
 
       setSelectedCommentId(null);
       setHoveredCommentId(null);
@@ -1473,7 +1488,7 @@ const RichTextEditorSurface = memo(function RichTextEditorSurface({
         true,
       );
     };
-  }, []);
+  }, [commentUploadCount]);
 
   const handleAddComment = useCallback(() => {
     const currentEditor = editorRef.current;
@@ -1656,16 +1671,24 @@ const RichTextEditorSurface = memo(function RichTextEditorSurface({
           existingComments: commentsRef.current.values(),
         },
       );
-      suppressNextMarkdownUpdateRef.current = true;
-      const nextAnchorCommentIds = addCommentIdsToAnchor(
-        currentEditor,
+      const rootId = getRootThreadIdForCommentId(
         commentId,
-        [comment.id],
+        commentsRef.current,
       );
-      if (suppressNextMarkdownUpdateRef.current) {
-        suppressNextMarkdownUpdateRef.current = false;
+      const isDocumentThread =
+        rootId && commentsRef.current.get(rootId)?.scope === "document";
+      if (!isDocumentThread) {
+        suppressNextMarkdownUpdateRef.current = true;
+        const nextAnchorCommentIds = addCommentIdsToAnchor(
+          currentEditor,
+          commentId,
+          [comment.id],
+        );
+        if (suppressNextMarkdownUpdateRef.current) {
+          suppressNextMarkdownUpdateRef.current = false;
+        }
+        if (!nextAnchorCommentIds) return;
       }
-      if (!nextAnchorCommentIds) return;
 
       const nextComments = new Map(commentsRef.current);
       nextComments.set(comment.id, comment);
@@ -2494,6 +2517,7 @@ export function PageCard({
   forceResetKey,
   initiallyDirty = false,
 }: PageCardProps) {
+  const commentUploadCount = useRef(0);
   const [saveState, setSaveState] = useState<DocumentSaveState>("saved");
 
   useEffect(() => {
@@ -2501,27 +2525,31 @@ export function PageCard({
   }, [onSaveStateChange, saveState]);
 
   return (
-    <div className="w-full">
-      <PageCardEditorSurface
-        page={page}
-        activeDocumentPath={activeDocumentPath}
-        selected={selected}
-        layout={layout}
-        focusRequestKey={focusRequestKey}
-        onSave={onSave}
-        onSaveStateChange={setSaveState}
-        editorViewMode={editorViewMode}
-        interactionMode={interactionMode}
-        backend={backend}
-        onEditorReady={onEditorReady}
-        onCommentRailPresenceChange={onCommentRailPresenceChange}
-        onDirtyStateChange={onDirtyStateChange}
-        onLocalContentChange={onLocalContentChange}
-        onSaveControllerChange={onSaveControllerChange}
-        saveBlocked={saveBlocked}
-        forceResetKey={forceResetKey}
-        initiallyDirty={initiallyDirty}
-      />
-    </div>
+    <CommentAssetContext.Provider value={backend}>
+      <CommentUploadContext.Provider value={commentUploadCount}>
+        <div className="w-full">
+          <PageCardEditorSurface
+            page={page}
+            activeDocumentPath={activeDocumentPath}
+            selected={selected}
+            layout={layout}
+            focusRequestKey={focusRequestKey}
+            onSave={onSave}
+            onSaveStateChange={setSaveState}
+            editorViewMode={editorViewMode}
+            interactionMode={interactionMode}
+            backend={backend}
+            onEditorReady={onEditorReady}
+            onCommentRailPresenceChange={onCommentRailPresenceChange}
+            onDirtyStateChange={onDirtyStateChange}
+            onLocalContentChange={onLocalContentChange}
+            onSaveControllerChange={onSaveControllerChange}
+            saveBlocked={saveBlocked}
+            forceResetKey={forceResetKey}
+            initiallyDirty={initiallyDirty}
+          />
+        </div>
+      </CommentUploadContext.Provider>
+    </CommentAssetContext.Provider>
   );
 }

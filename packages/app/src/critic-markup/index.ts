@@ -272,7 +272,13 @@ function addEndmatterFeedback(
     if (typeof entry.body !== "string") {
       continue;
     }
-    if (comments.has(id)) {
+    const anchored = comments.get(id);
+    if (anchored) {
+      // An empty inline reference keeps the anchor in the document while the
+      // complete multiline body lives in YAML, outside Markdown block parsing.
+      if (anchored.content === "") {
+        comments.set(id, { ...anchored, content: entry.body });
+      }
       continue;
     }
 
@@ -335,11 +341,23 @@ function endmatterEntryForComment(
     next.body = comment.content;
     next.re = comment.parentCommentId;
   } else {
-    delete next.body;
+    if (commentNeedsEndmatterBody(comment)) {
+      next.body = comment.content;
+    } else {
+      delete next.body;
+    }
     delete next.re;
   }
 
   return next;
+}
+
+function commentNeedsEndmatterBody(comment: CriticComment): boolean {
+  return (
+    /[\r\n]/.test(comment.content) ||
+    comment.content.includes("<<}") ||
+    /!\[[^\]\n]*\]\(/.test(comment.content)
+  );
 }
 
 function endmatterEntryForChange(
@@ -584,7 +602,9 @@ function serializeCommentBlocks(
   let result = "";
 
   for (const comment of orderedComments) {
-    result += `{>>${comment.content}<<}${
+    const body =
+      useEndmatter && commentNeedsEndmatterBody(comment) ? "" : comment.content;
+    result += `{>>${body}<<}${
       useEndmatter ? `{#${comment.id}}` : serializeMetadata(comment)
     }`;
   }
@@ -1682,12 +1702,20 @@ export function editorStateToCriticMarkdown(
     (doc as JSONContent & { yamlEndmatter?: string }).yamlEndmatter ??
     null;
   const changes = collectCriticChangesFromDoc(doc);
-  const useEndmatter = Boolean(sourceEndmatter);
+  const effectiveEndmatter =
+    sourceEndmatter ??
+    ([...comments.values()].some(
+      (comment) =>
+        comment.scope === "document" || commentNeedsEndmatterBody(comment),
+    )
+      ? "---\ncomments: {}\n"
+      : null);
+  const useEndmatter = Boolean(effectiveEndmatter);
   addCriticCommentRule(service, comments, useEndmatter);
   addCriticChangeRule(service, comments, useEndmatter);
   addCriticCodeBlockRule(service, comments, useEndmatter);
   const endmatter = serializeReviewEndmatter(
-    sourceEndmatter,
+    effectiveEndmatter,
     comments,
     changes,
   );

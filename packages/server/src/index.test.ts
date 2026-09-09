@@ -817,6 +817,29 @@ describe("createApp", () => {
     ).toBe("png bytes");
   });
 
+  it("serves uploaded screenshot bytes through the returned preview URL", async () => {
+    const screenshot = Buffer.from(
+      "iVBORw0KGgoAAAANSUhEUgAAAAEAAAABCAQAAAC1HAwCAAAAC0lEQVR42mP8/x8AAwMCAO+aS1cAAAAASUVORK5CYII=",
+      "base64",
+    );
+    const { app } = createApp({ homeDir, staticDirPath: projectDir });
+
+    const upload = await request(app)
+      .post("/api/assets")
+      .send({
+        projectPath: projectDir,
+        filename: "screenshot.png",
+        mimeType: "image/png",
+        dataBase64: screenshot.toString("base64"),
+      });
+    expect(upload.status).toBe(201);
+
+    const preview = await request(app).get(upload.body.previewUrl);
+    expect(preview.status).toBe(200);
+    expect(preview.headers["content-type"]).toMatch(/^image\/png/);
+    expect(preview.body).toEqual(screenshot);
+  });
+
   it("advertises remote-document support in the status capabilities", async () => {
     const { app } = createApp({ homeDir, staticDirPath: projectDir });
     const response = await request(app).get("/api/status");
