@@ -6,7 +6,7 @@ import os from "node:os";
 import path from "node:path";
 import { fileURLToPath } from "node:url";
 import { validateRoughdraftMarkdown } from "@roughdraft/rfm";
-import { afterEach, beforeEach, describe, expect, it } from "vitest";
+import { afterEach, beforeEach, describe, expect, it, vi } from "vitest";
 import {
   createCliDependencies,
   createDefaultOpenUrl,
@@ -1075,6 +1075,23 @@ describe("cli", () => {
     }
 
     expect(persisted).not.toBeNull();
+    // A running server can precede watch registration. Publishing before the
+    // watcher is ready would correctly exclude this event from a from-now wait.
+    const statusUrl = new URL(
+      `http://localhost:${persisted?.port}/api/review-events/status`,
+    );
+    statusUrl.search = new URLSearchParams({
+      projectPath: projectDir,
+      path: "draft.md",
+    }).toString();
+    await vi.waitFor(
+      async () => {
+        const response = await fetch(statusUrl);
+        expect(response.ok).toBe(true);
+        expect((await response.json()).watching).toBe(true);
+      },
+      { timeout: 1000, interval: 10 },
+    );
     await fetch(`http://localhost:${persisted?.port}/api/review-events`, {
       method: "POST",
       headers: { "Content-Type": "application/json" },
