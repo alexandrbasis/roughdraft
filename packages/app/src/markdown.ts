@@ -1,5 +1,5 @@
 import { tables, taskListItems } from "@joplin/turndown-plugin-gfm";
-import { marked } from "marked";
+import { Marked, marked, type TokenizerObject } from "marked";
 import TurndownService from "turndown";
 import { parse as parseYaml } from "yaml";
 
@@ -389,6 +389,26 @@ export function createMarkedRenderer(options?: MarkdownOptions) {
   return renderer;
 }
 
+// Single tildes are common in approximations such as "~57% (~100h)".
+// Require both delimiters to be doubled before treating text as deleted.
+const doubleTildeDelPattern =
+  /^(~~)(?=[^\s~])((?:\\.|[^\\])*?(?:\\.|[^\s~\\]))\1(?=[^~]|$)/;
+
+export const markedTokenizer: TokenizerObject = {
+  del(src) {
+    const match = doubleTildeDelPattern.exec(src);
+    if (!match) return undefined;
+
+    const text = match[2] ?? "";
+    return {
+      type: "del",
+      raw: match[0],
+      text,
+      tokens: this.lexer.inlineTokens(text),
+    };
+  },
+};
+
 export function createTurndownService(): TurndownService {
   const service = new TurndownService({
     headingStyle: "atx",
@@ -649,9 +669,12 @@ export function toMarkdown(html: string): string {
 }
 
 export function toHtml(markdown: string, options?: MarkdownOptions): string {
-  return marked.parse(markdown, {
+  const parser = new Marked({
     async: false,
     gfm: true,
     renderer: createMarkedRenderer(options),
-  }) as string;
+  });
+  parser.use({ tokenizer: markedTokenizer });
+
+  return parser.parse(markdown) as string;
 }

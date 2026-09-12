@@ -1,4 +1,4 @@
-import { Extension, Mark, Node, mergeAttributes } from "@tiptap/core";
+import { Extension, Mark, mergeAttributes, Node } from "@tiptap/core";
 import Code from "@tiptap/extension-code";
 import CodeBlock from "@tiptap/extension-code-block";
 import Image from "@tiptap/extension-image";
@@ -16,8 +16,12 @@ import type {
 } from "@tiptap/pm/model";
 import { Plugin, PluginKey } from "@tiptap/pm/state";
 import { Decoration, DecorationSet } from "@tiptap/pm/view";
+import { ReactNodeViewRenderer } from "@tiptap/react";
 import StarterKit from "@tiptap/starter-kit";
+import { CodeBlockView } from "./CodeBlockView";
+import { codeHighlightPlugin } from "./code-highlighting";
 import { rawMarkdownBlockAttribute } from "./markdown";
+import { MermaidSelectionReveal } from "./mermaid-selection";
 
 declare module "@tiptap/core" {
   interface Commands<ReturnType> {
@@ -715,6 +719,16 @@ const MarkdownCode = Code.extend({
 
 const MarkdownCodeBlock = CodeBlock.extend({
   marks: "commentRef criticChange",
+
+  addNodeView() {
+    return ReactNodeViewRenderer(CodeBlockView, {
+      contentDOMElementTag: "span",
+    });
+  },
+
+  addProseMirrorPlugins() {
+    return [...(this.parent?.() ?? []), codeHighlightPlugin()];
+  },
 });
 
 const MarkdownImage = Image.extend({
@@ -800,6 +814,7 @@ export function createEditorExtensions(placeholder: string) {
     CriticChange,
     RawMarkdownBlock,
     MarkdownCodeBlock,
+    MermaidSelectionReveal,
     CommentHighlight,
     CriticChangeHighlight,
     MarkdownImage.configure({

@@ -1,7 +1,12 @@
 import { fileURLToPath } from "node:url";
 import { expect, type Page, test } from "@playwright/test";
 import type { ReviewRouteRecord } from "../src/review-home/review-route";
-import { logE2eEvent } from "./helpers";
+import {
+  createMarkdownProject,
+  logE2eEvent,
+  removeMarkdownProject,
+  writeProjectFile,
+} from "./helpers";
 
 function reviewFixtures(): ReviewRouteRecord[] {
   // Interleave statuses so retaining API order within each group is observable.
@@ -96,6 +101,66 @@ async function captureInbox(page: Page, size: "desktop" | "mobile") {
 }
 
 test.describe("review inbox", () => {
+  test("@smoke keeps a long project and route inside a 390px inbox", async ({
+    page,
+    request,
+  }) => {
+    const projectDir = createMarkdownProject("review-inbox");
+    const documentPath = writeProjectFile(
+      projectDir,
+      "roughdraft-review-accessibility-abcdef/long-review-title-for-a-narrow-inbox.md",
+      "# A review that can be opened from a narrow inbox\n\nReview the layout.\n",
+    );
+    try {
+      const registered = await request.post("/api/reviews", {
+        data: { documentPath },
+      });
+      expect(registered.status()).toBe(201);
+      const review = (await registered.json()) as ReviewRouteRecord;
+      await page.setViewportSize({ width: 390, height: 844 });
+      await page.goto("/");
+      const item = page.locator(
+        `[data-testid="review-home-item"][href="${review.route}"]`,
+      );
+      await expect(item).toHaveAttribute("href", review.route);
+      await expect(item).toBeVisible();
+      await page.evaluate(() => document.fonts.ready);
+      const widths = await page
+        .getByTestId("review-home-card")
+        .evaluateAll((cards) => ({
+          document: document.documentElement.scrollWidth,
+          viewport: window.innerWidth,
+          cards: cards.map((card) => {
+            const bounds = card.getBoundingClientRect();
+            return { left: bounds.left, right: bounds.right };
+          }),
+        }));
+      logE2eEvent("review-inbox.long-project-mobile", widths);
+      expect(widths.document).toBeLessThanOrEqual(390);
+      for (const card of widths.cards) {
+        expect(card.left).toBeGreaterThanOrEqual(0);
+        expect(card.right).toBeLessThanOrEqual(390);
+      }
+      await page.screenshot({
+        path: fileURLToPath(
+          new URL(
+            "../../../.context/ui-state-screenshots/review-inbox-long-project-mobile.png",
+            import.meta.url,
+          ),
+        ),
+        animations: "disabled",
+      });
+      await item.click();
+      await expect(page).toHaveURL((url) => url.pathname === review.route);
+      await expect(page.getByTestId("rich-text-editor")).toContainText(
+        "Review the layout.",
+      );
+    } finally {
+      await page.close();
+      removeMarkdownProject(projectDir);
+    }
+  });
+
   test("pages stable review links and restores filters without adding history entries", async ({
     page,
   }) => {

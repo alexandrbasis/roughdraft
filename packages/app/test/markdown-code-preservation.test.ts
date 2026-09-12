@@ -1,11 +1,96 @@
 import { Editor } from "@tiptap/core";
 import { expect, it } from "vitest";
 import {
+  criticMarkdownHasReviewRail,
   criticMarkdownToEditorState,
   editorStateToCriticMarkdown,
 } from "../src/critic-markup";
 import { createEditorExtensions } from "../src/editor-extensions";
 import { protectRichTextRoundTripMarkdown } from "../src/markdown";
+
+it.each([
+  ["an unresolved suggestion reference", "{++example++}{#s1}"],
+  ["unrelated attributes", '{++example++}{class="sample"}'],
+  ["incomplete suggestion attributes", '{++example++}{id="s1"}'],
+  [
+    "an invalid suggestion timestamp",
+    '{++example++}{id="s1" by="user" at="not-a-date"}',
+  ],
+])("keeps %s as literal fenced code", (_label, source) => {
+  const input = `\`\`\`text\n${source}\n\`\`\`\n`;
+  const { doc, comments } = criticMarkdownToEditorState(input);
+
+  expect(doc.content?.[0]?.content).toEqual([{ type: "text", text: source }]);
+  expect(editorStateToCriticMarkdown(doc, comments)).toBe(input);
+  expect(criticMarkdownHasReviewRail(input)).toBe(false);
+});
+
+it("reloads a saved leading-space insertion as a code suggestion", () => {
+  const source = [
+    "flowchart LR",
+    '  START["Start"] --> DONE["Done now"]',
+    "",
+    '  DONE --> ARCHIVE["Archive"]',
+  ].join("\n");
+  const annotatedSource = source.replace(
+    " now",
+    '{++ now++}{id="s1" by="user" at="2026-09-12T04:49:54.595Z"}',
+  );
+  const input = `Diagram source.\n\n\`\`\`mermaid\n${annotatedSource}\n\`\`\`\n`;
+  const { doc, comments } = criticMarkdownToEditorState(input);
+  const codeBlock = doc.content?.find((node) => node.type === "codeBlock");
+
+  expect(codeBlock?.content?.map((node) => node.text ?? "").join("")).toBe(
+    source,
+  );
+  expect(
+    codeBlock?.content?.find((node) => node.text === " now")?.marks,
+  ).toEqual([
+    expect.objectContaining({
+      type: "criticChange",
+      attrs: expect.objectContaining({ kind: "addition", changeId: "s1" }),
+    }),
+  ]);
+  expect(editorStateToCriticMarkdown(doc, comments)).toBe(input);
+  expect(criticMarkdownHasReviewRail(input)).toBe(true);
+});
+
+it("restores endmatter-backed code suggestions without parsing their literal code as Markdown", () => {
+  const code = '  return "<tag> & **literal**";';
+  const input = [
+    "```ts",
+    `{++${code}++}{#s1}`,
+    "```",
+    "",
+    "---",
+    "suggestions:",
+    "  s1:",
+    "    by: user",
+    '    at: "2026-09-12T04:49:54.595Z"',
+    "",
+  ].join("\n");
+  const { doc, comments } = criticMarkdownToEditorState(input);
+
+  expect(doc.content?.[0]?.content).toEqual([
+    {
+      type: "text",
+      text: code,
+      marks: [
+        {
+          type: "criticChange",
+          attrs: {
+            kind: "addition",
+            changeId: "s1",
+            authorType: "user",
+            authorId: "user",
+            createdAt: "2026-09-12T04:49:54.595Z",
+          },
+        },
+      ],
+    },
+  ]);
+  expect(editorStateToCriticMarkdown(doc, comments)).toBe(input);
+});
 
 it("preserves literal HTML in fenced code after editing a neighboring paragraph and reloading", () => {
   const code =

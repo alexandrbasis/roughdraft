@@ -45,12 +45,14 @@ import { cn } from "./lib/utils";
 import { MarkdownCodeEditor } from "./MarkdownCodeEditor";
 import { buildLocationForLinkedMarkdownDocument } from "./app-navigation";
 import { toHtml } from "./markdown";
+import { revealMermaidSourceForPosition } from "./mermaid-selection";
 import {
   createSerializedSaveQueue,
   type SerializedSaveQueue,
 } from "./serialized-saving";
 import type { Page, StorageBackend } from "./storage";
 import { useCommentAnchorLayout } from "./useCommentAnchorLayout";
+import { useCommentDock } from "./useCommentDock";
 import { useReviewLayoutShiftAnimation } from "./useReviewLayoutShiftAnimation";
 
 export type DocumentSaveState = "saved" | "unsaved" | "saving" | "error";
@@ -243,7 +245,8 @@ function findCommentRange(editor: Editor | null, commentId: string) {
   let closed = false;
 
   editor.state.doc.descendants((node, pos) => {
-    if (closed || !node.isText) return false;
+    if (closed) return false;
+    if (!node.isText) return;
 
     const hasCommentId = node.marks.some(
       (mark) =>
@@ -1347,6 +1350,14 @@ const RichTextEditorSurface = memo(function RichTextEditorSurface({
       ? hoveredCommentId
       : null;
 
+    const currentHighlight = commentHighlightPluginKey.getState(editor.state);
+    if (
+      currentHighlight?.selectedCommentId === selectedCommentId &&
+      currentHighlight.hoveredCommentId === effectiveHoveredCommentId
+    ) {
+      return;
+    }
+
     editor.view.dispatch(
       editor.state.tr.setMeta(commentHighlightPluginKey, {
         selectedCommentId,
@@ -1359,6 +1370,16 @@ const RichTextEditorSurface = memo(function RichTextEditorSurface({
     if (!editor) return;
 
     const effectiveHoveredChangeId = selectedChangeId ? hoveredChangeId : null;
+
+    const currentHighlight = criticChangeHighlightPluginKey.getState(
+      editor.state,
+    );
+    if (
+      currentHighlight?.selectedChangeId === selectedChangeId &&
+      currentHighlight.hoveredChangeId === effectiveHoveredChangeId
+    ) {
+      return;
+    }
 
     editor.view.dispatch(
       editor.state.tr.setMeta(criticChangeHighlightPluginKey, {
@@ -1509,7 +1530,7 @@ const RichTextEditorSurface = memo(function RichTextEditorSurface({
     suppressNextMarkdownUpdateRef.current = true;
     currentEditor
       .chain()
-      .focus()
+      .focus(undefined, { scrollIntoView: false })
       .setCommentRef({ commentIds: [...existingIds, comment.id] })
       .run();
     if (suppressNextMarkdownUpdateRef.current) {
@@ -1861,6 +1882,11 @@ const RichTextEditorSurface = memo(function RichTextEditorSurface({
   const selectSuggestion = useCallback((changeId: string) => {
     setSelectedChangeId(changeId);
     setSelectedCommentId(null);
+    const currentEditor = editorRef.current;
+    const range = getCriticChangeRange(currentEditor, changeId);
+    if (currentEditor && range) {
+      revealMermaidSourceForPosition(currentEditor, range.from);
+    }
   }, []);
 
   const focusComment = useCallback((commentId: string) => {
@@ -1871,6 +1897,7 @@ const RichTextEditorSurface = memo(function RichTextEditorSurface({
 
     const range = findCommentRange(currentEditor, commentId);
     if (range) {
+      revealMermaidSourceForPosition(currentEditor, range.from);
       currentEditor.view.dispatch(
         currentEditor.state.tr.setSelection(
           TextSelection.create(currentEditor.state.doc, range.from, range.to),
@@ -1892,6 +1919,7 @@ const RichTextEditorSurface = memo(function RichTextEditorSurface({
     const range = getCriticChangeRange(currentEditor, changeId);
     if (!range) return;
 
+    revealMermaidSourceForPosition(currentEditor, range.from);
     currentEditor.view.dispatch(
       currentEditor.state.tr.setSelection(
         TextSelection.create(currentEditor.state.doc, range.from, range.to),
@@ -1931,15 +1959,20 @@ const RichTextEditorSurface = memo(function RichTextEditorSurface({
     "document-content-inset",
     reviewRailIsFlow ? "pb-0" : "pb-24",
   );
-  const fallbackClass = cn(
-    "document-comment-fallback mb-4",
-    reviewRailIsFlow ? "hidden" : "min-[1100px]:hidden",
+  const hasDockedComments =
+    activeComments.length > 0 && layout !== "embedded-demo";
+  const dockEmbeddedRail = embeddedWorkspace && hasDockedComments;
+  const { dockRef, height: dockHeight } = useCommentDock(
+    hasDockedComments,
+    selectedCommentId,
+    dockEmbeddedRail ? documentShellRef : undefined,
   );
   const reviewRailClass = cn(
     "document-comment-rail",
     reviewRailIsFlow
       ? "block px-4 pb-4 min-[900px]:p-0"
       : "review-layout-rail hidden min-[1100px]:block",
+    dockEmbeddedRail && "document-comment-rail--docked",
   );
 
   return (
@@ -1962,33 +1995,12 @@ const RichTextEditorSurface = memo(function RichTextEditorSurface({
         className={documentShellClass}
       >
         <div className={documentMainClass}>
-          {activeComments.length > 0 ? (
-            <CommentEditorList
-              comments={activeComments}
-              className={fallbackClass}
-              testId="document-comment-fallback"
-              selectedCommentId={selectedCommentId}
-              hoveredCommentId={hoveredCommentId}
-              onDeleteComment={deleteComment}
-              onUpdateComment={(commentId, nextContent) => {
-                updateComment(commentId, (current) => ({
-                  ...current,
-                  content: nextContent,
-                }));
-              }}
-              onReplyComment={replyToComment}
-              onSelectComment={selectComment}
-              onHoverComment={setHoveredCommentId}
-              pendingFocusCommentId={pendingFocusCommentId}
-              newCommentDraftIds={newCommentDraftIds}
-              onAutoFocusComment={(commentId) => {
-                setPendingFocusCommentId((current) =>
-                  current === commentId ? null : current,
-                );
-              }}
-            />
-          ) : null}
-          <div className={contentInsetClass}>
+          <div
+            className={contentInsetClass}
+            style={
+              dockHeight > 0 ? { paddingBottom: dockHeight + 24 } : undefined
+            }
+          >
             <div
               data-testid="document-content-card"
               className={cn(contentCardClass, "px-10 py-10 sm:px-14 sm:py-14")}
@@ -2070,6 +2082,38 @@ const RichTextEditorSurface = memo(function RichTextEditorSurface({
           editor={editor}
         />
       </div>
+      {hasDockedComments && !reviewRailIsFlow ? (
+        <div
+          ref={dockRef}
+          className="document-comment-dock"
+          data-testid="document-comment-dock"
+        >
+          <CommentEditorList
+            comments={activeComments}
+            className="document-comment-dock-panel"
+            testId="document-comment-fallback"
+            selectedCommentId={selectedCommentId}
+            hoveredCommentId={hoveredCommentId}
+            onDeleteComment={deleteComment}
+            onUpdateComment={(commentId, nextContent) => {
+              updateComment(commentId, (current) => ({
+                ...current,
+                content: nextContent,
+              }));
+            }}
+            onReplyComment={replyToComment}
+            onSelectComment={selectComment}
+            onHoverComment={setHoveredCommentId}
+            pendingFocusCommentId={pendingFocusCommentId}
+            newCommentDraftIds={newCommentDraftIds}
+            onAutoFocusComment={(commentId) => {
+              setPendingFocusCommentId((current) =>
+                current === commentId ? null : current,
+              );
+            }}
+          />
+        </div>
+      ) : null}
     </div>
   );
 });

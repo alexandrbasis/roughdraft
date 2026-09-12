@@ -9,8 +9,8 @@ import {
 } from "lucide-react";
 import { useCallback, useEffect, useRef, useState } from "react";
 import { Button } from "../components/ui/button";
-import { reviewRouteHref, type ReviewRouteRecord } from "./review-route";
 import { ReviewHistory } from "./ReviewHistory";
+import { type ReviewRouteRecord, reviewRouteHref } from "./review-route";
 
 const PAGE_SIZE = 10;
 const REVIEW_FILTERS = [
@@ -317,7 +317,10 @@ export function ReviewHome({
           </Button>
         </div>
       ) : null}
-      <div className="mt-4 grid gap-3" data-testid="review-home-list">
+      <div
+        className="mt-4 grid grid-cols-1 gap-3"
+        data-testid="review-home-list"
+      >
         {pageReviews.map((review) => {
           const pending = review.status === "pending";
           return (
