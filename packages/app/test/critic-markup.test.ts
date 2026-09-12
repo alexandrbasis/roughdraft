@@ -846,7 +846,8 @@ const command = "{==roughdraft open==}{>>test<<}{id="c1" by="user" at="2026-04-2
       ],
     ]);
 
-    expect(editorStateToCriticMarkdown(doc, comments)).toBe(
+    const saved = editorStateToCriticMarkdown(doc, comments);
+    expect(saved).toBe(
       [
         "```ts",
         "",
@@ -860,6 +861,27 @@ const command = "{==roughdraft open==}{>>test<<}{id="c1" by="user" at="2026-04-2
         "```",
         "",
       ].join("\n"),
+    );
+
+    const reloaded = criticMarkdownToEditorState(saved);
+    const codeContent = reloaded.doc.content?.[0]?.content ?? [];
+    expect(codeContent.map((node) => node.text ?? "").join("")).toBe(
+      doc.content[0].content.map((node) => node.text).join(""),
+    );
+    expect(
+      codeContent.flatMap((node) =>
+        (node.marks ?? [])
+          .filter((mark) => mark.type === "criticChange")
+          .map((mark) => [mark.attrs?.changeId, mark.attrs?.kind]),
+      ),
+    ).toEqual([
+      ["s1", "addition"],
+      ["s2", "deletion"],
+      ["s3", "substitution-old"],
+      ["s3", "substitution-new"],
+    ]);
+    expect(editorStateToCriticMarkdown(reloaded.doc, reloaded.comments)).toBe(
+      saved,
     );
   });
 

@@ -479,6 +479,29 @@ describe("PageCard editor integration", () => {
     window.history.replaceState(null, "", "/");
   });
 
+  it.each([
+    ["LF", "```text\nRender without editing\n```\n"],
+    ["CRLF", "```text\r\nRender without editing\r\n```\r\n"],
+  ])("opening a document ending in fenced code does not autosave (%s)", async (_, content) => {
+    vi.useFakeTimers();
+
+    const rendered = await renderPageCard({
+      page: {
+        id: "doc-code-no-edit",
+        title: "Code without edits",
+        content,
+      },
+    });
+
+    expect(rendered.getEditor().getText()).toContain("Render without editing");
+
+    await act(async () => {
+      await vi.advanceTimersByTimeAsync(500);
+    });
+
+    expect(rendered.onSave).not.toHaveBeenCalled();
+  });
+
   it("document mode edits trigger autosave", async () => {
     const rendered = await renderPageCard({
       page: {
@@ -691,7 +714,13 @@ describe("PageCard editor integration", () => {
 
     vi.useFakeTimers();
 
-    await insertTextAtEnd(rendered.getEditor(), " updated");
+    const editor = rendered.getEditor();
+    await act(async () => {
+      editor.commands.insertContentAt(editor.state.doc.content.size, {
+        type: "paragraph",
+      });
+    });
+    await insertTextAtEnd(editor, " updated");
 
     await act(async () => {
       vi.advanceTimersByTime(500);

@@ -14,9 +14,18 @@ release archive. It is not the unscoped `roughdraft` package on npm.
 | Restore YAML-only replies to the review rail | [PR 145](https://github.com/Lex-Inc/roughdraft/pull/145) |
 | Install the packed CLI with runtime dependencies | [Issue 137](https://github.com/Lex-Inc/roughdraft/issues/137), [Issue 116](https://github.com/Lex-Inc/roughdraft/issues/116) |
 | Compact layout for host panels | [Issue 140](https://github.com/Lex-Inc/roughdraft/issues/140) |
+| Keep narrow-window comment entry beside the selected passage | [PR 151](https://github.com/Lex-Inc/roughdraft/pull/151) |
+| Preserve literal single tildes in approximation text | [PR 135](https://github.com/Lex-Inc/roughdraft/pull/135) |
+| Preview Mermaid diagrams and highlight fenced code | [PR 143](https://github.com/Lex-Inc/roughdraft/pull/143) |
 
 These reports guided the changes. Each patch is checked against this checkout;
 an upstream proposal is not treated as proof that a bug is fixed.
+
+The Mermaid and highlighting additions retain ordinary editable code blocks.
+Generated SVG is displayed as an image, outside the editable document; source
+comments and suggestions remain in Markdown. Rendering follows this fork's
+saved appearance preference. The narrow comment dock also covers embedded
+reviews and leaves the Appearance and review handoff controls available.
 
 ## Durable local reviews
 

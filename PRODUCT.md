@@ -16,7 +16,7 @@ Roughdraft lets the reviewer edit a document, leave anchored feedback, and hand 
 
 ## Operating Context
 
-The app runs locally and opens documents through a worktree-specific CLI. The current task covers comments and replies with screenshots, including clipboard paste, in the existing light and dark themes.
+The app runs locally and opens documents through a worktree-specific CLI. Reviews include comments, replies, screenshot attachments, and suggestions. Mermaid previews and code highlighting help read technical documents. Narrow-window comment entry keeps the selected passage visible, including in embedded panels.
 
 ## Capabilities and Constraints
 
@@ -24,11 +24,13 @@ The app runs locally and opens documents through a worktree-specific CLI. The cu
 - Store local attachments as files and references in Markdown.
 - Preserve comments and replies across save and reload.
 - Reuse existing shadcn components and storage backends.
+- Keep Mermaid source editable and preserve literal approximation text.
+- Apply the selected appearance to diagrams and syntax highlighting without saving presentation changes into the document.
 - Remote-session attachment support is an open capability outside this local-review task.
 
 ## Evidence on Hand
 
-The user confirmed this scope on 2026-09-09. The existing implementation is in packages/app/src and packages/server/src. docs/adr/0002-criticmarkup-as-review-format.md defines the portable review format.
+The implementation is in packages/app/src and packages/server/src. FORK.md links the upstream reports used to select improvements. docs/adr/0002-criticmarkup-as-review-format.md defines the portable review format.
 
 ## Product Principles
 

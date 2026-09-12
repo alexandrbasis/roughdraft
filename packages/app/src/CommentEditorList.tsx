@@ -214,7 +214,7 @@ export function CommentEditorList({
     const target = textareaRefs.current.get(pendingFocusCommentId);
     if (!target || target.offsetParent === null) return;
 
-    target.focus();
+    target.focus({ preventScroll: !!target.closest(".document-comment-dock") });
     const cursorPosition = target.value.length;
     target.setSelectionRange(cursorPosition, cursorPosition);
     onAutoFocusComment?.(pendingFocusCommentId);
@@ -517,11 +517,9 @@ function CommentThreadNode({
       : "border-[#D2C7B8] bg-[#DED8CE] text-stone-700 dark:border-slate-600 dark:bg-slate-700 dark:text-stone-300";
   const bodyTone =
     variant === "banner"
-      ? isSelected
-        ? "bg-white"
-        : isHovered
-          ? "bg-white"
-          : "bg-transparent"
+      ? isSelected || isHovered
+        ? "bg-white dark:bg-card"
+        : "bg-transparent"
       : "bg-transparent";
   const treeLineTone =
     variant === "banner"

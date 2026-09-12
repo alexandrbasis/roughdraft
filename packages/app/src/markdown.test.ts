@@ -2,6 +2,10 @@ import fs from "node:fs";
 import path from "node:path";
 import { describe, expect, it } from "vitest";
 import {
+  criticMarkdownToEditorState,
+  criticMarkdownToRenderedHtml,
+} from "./critic-markup";
+import {
   splitYamlFrontmatter,
   toHtml,
   toMarkdown,
@@ -109,6 +113,44 @@ describe("toHtml", () => {
       ].join("\n"),
     );
   });
+});
+
+describe.each([
+  { name: "plain Markdown", render: toHtml },
+  {
+    name: "CriticMarkup document",
+    render: (markdown: string) => criticMarkdownToRenderedHtml(markdown).html,
+  },
+])("$name tilde rendering", ({ render }) => {
+  it("keeps approximation tildes literal throughout a paragraph", () => {
+    const prose = "Tracked ~57% of work time (~100h), with ~16 posts.";
+
+    expect(render(prose)).toBe(`<p>${prose}</p>\n`);
+  });
+
+  it("still renders double-tilde strikethrough alongside approximations", () => {
+    expect(render("~57% complete, ~~old estimate~~, ~100h remaining.")).toBe(
+      "<p>~57% complete, <del>old estimate</del>, ~100h remaining.</p>\n",
+    );
+  });
+
+  it("preserves single and double tildes inside inline and fenced code", () => {
+    const literal = "~57% ~~literal~~ ~100h";
+    const html = render(
+      [`\`${literal}\``, "", "```text", literal, "```"].join("\n"),
+    );
+
+    expect(html).toContain(`<code>${literal}</code>`);
+    expect(html).toContain(`<code class="language-text">${literal}</code>`);
+    expect(html).not.toContain("<del>");
+  });
+});
+
+it("loads approximation prose into the editor without adding strike marks", () => {
+  const prose = "Tracked ~57% of work time (~100h), with ~16 posts.";
+  const { doc } = criticMarkdownToEditorState(prose);
+
+  expect(doc.content?.[0]?.content).toEqual([{ type: "text", text: prose }]);
 });
 
 describe("normalizeBlockSpacing", () => {

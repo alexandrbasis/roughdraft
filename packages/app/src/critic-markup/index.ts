@@ -1,4 +1,5 @@
-import { generateHTML, generateJSON, type JSONContent } from "@tiptap/core";
+import { generateHTML, getSchema, type JSONContent } from "@tiptap/core";
+import { DOMParser as ProseMirrorDOMParser } from "@tiptap/pm/model";
 import {
   Marked,
   type RendererThis,
@@ -17,6 +18,7 @@ import {
 import {
   createMarkedRenderer,
   createTurndownService,
+  markedTokenizer,
   normalizeBlockSpacing,
   appendYamlEndmatter,
   prependYamlFrontmatter,
@@ -736,6 +738,29 @@ function getTrailingAttributeMetadata(src: string, offset: number) {
   };
 }
 
+function hasSavedCodeSuggestionMetadata(
+  metadataText: string | undefined,
+  endmatter?: ParsedEndmatter,
+): boolean {
+  if (!metadataText) return false;
+
+  const reference = metadataText.match(metadataReferencePattern);
+  if (reference) {
+    return endmatter?.suggestions.has(reference[1] ?? "") ?? false;
+  }
+
+  const fields = new Map<string, string>();
+  for (const match of metadataText.matchAll(metadataAttributePattern)) {
+    fields.set(match[1], unescapeMetadataAttributeValue(match[2]));
+  }
+
+  return Boolean(
+    fields.get("id")?.trim() &&
+      fields.get("by")?.trim() &&
+      Number.isFinite(Date.parse(fields.get("at") ?? "")),
+  );
+}
+
 function tokenizeCriticCommentBlocks(
   src: string,
   offset: number,
@@ -812,7 +837,7 @@ function tokenizeCriticStandaloneComment(
 }
 
 function tokenizeCriticChange(
-  lexer: TokenizerThis["lexer"],
+  lexer: Pick<TokenizerThis["lexer"], "inlineTokens">,
   src: string,
   existingChanges: Iterable<Pick<CriticChangeAttrs, "changeId">>,
   existingComments: Iterable<Pick<CriticComment, "id">>,
@@ -939,16 +964,85 @@ function renderCriticChangeSpan(
   )}">${changeSpan}</span>`;
 }
 
+function renderCriticChangeToken(
+  token: CriticChangeToken,
+  renderTokens: (tokens: Token[]) => string,
+) {
+  if (token.change.kind === "substitution-old") {
+    const substitutionHtml = `${renderCriticChangeSpan(
+      token.change,
+      renderTokens(token.oldTokens ?? []),
+      "substitution-old",
+    )}${renderCriticChangeSpan(
+      token.change,
+      renderTokens(token.newTokens ?? []),
+      "substitution-new",
+    )}`;
+
+    if (token.commentIds.length === 0) return substitutionHtml;
+
+    return `<span data-comment-ids="${escapeHtml(
+      JSON.stringify(token.commentIds),
+    )}">${substitutionHtml}</span>`;
+  }
+
+  return renderCriticChangeSpan(
+    token.change,
+    renderTokens(token.tokens ?? []),
+    token.change.kind,
+    token.commentIds,
+  );
+}
+
 function renderCriticCodeText(
   text: string,
   comments: Map<string, CriticComment>,
+  changes: Map<string, CriticChangeAttrs>,
   endmatter?: ParsedEndmatter,
 ) {
   let result = "";
   let offset = 0;
 
   while (offset < text.length) {
-    const anchorMatch = text.slice(offset).match(criticCommentAnchorPattern);
+    const remaining = text.slice(offset);
+    const changeMatch =
+      remaining.match(criticAdditionPattern) ??
+      remaining.match(criticDeletionPattern) ??
+      remaining.match(criticSubstitutionPattern);
+
+    // Only persisted review metadata activates code suggestions; syntax
+    // examples with unresolved IDs or unrelated attributes remain literal.
+    if (
+      changeMatch &&
+      hasSavedCodeSuggestionMetadata(
+        getTrailingAttributeMetadata(remaining, changeMatch[0].length)
+          .metadataText,
+        endmatter,
+      )
+    ) {
+      const parsed = tokenizeCriticChange(
+        {
+          inlineTokens: (value) => [{ type: "text", raw: value, text: value }],
+        },
+        remaining,
+        changes.values(),
+        comments.values(),
+        endmatter,
+      );
+      if (parsed) {
+        changes.set(parsed.token.change.changeId, parsed.token.change);
+        for (const comment of parsed.comments) {
+          comments.set(comment.id, comment);
+        }
+        result += renderCriticChangeToken(parsed.token, (tokens) =>
+          tokens.map((token) => escapeHtml(token.raw)).join(""),
+        );
+        offset += parsed.token.raw.length;
+        continue;
+      }
+    }
+
+    const anchorMatch = remaining.match(criticCommentAnchorPattern);
 
     if (!anchorMatch || anchorMatch.index !== 0) {
       result += escapeHtml(text[offset] ?? "");
@@ -1013,13 +1107,14 @@ function renderCriticCodeText(
 function renderCriticCodeBlock(
   token: Tokens.Code,
   comments: Map<string, CriticComment>,
+  changes: Map<string, CriticChangeAttrs>,
   endmatter?: ParsedEndmatter,
 ) {
   const language = (token.lang || "").match(/\S+/)?.[0];
   const classAttr = language ? ` class="language-${escapeHtml(language)}"` : "";
   const content = token.escaped
     ? token.text
-    : renderCriticCodeText(token.text, comments, endmatter);
+    : renderCriticCodeText(token.text, comments, changes, endmatter);
 
   return `<pre><code${classAttr}>${content}</code></pre>\n`;
 }
@@ -1454,7 +1549,8 @@ function createCriticMarked(
   const comments = new Map<string, CriticComment>();
   const changes = new Map<string, CriticChangeAttrs>();
   const renderer = createMarkedRenderer(markdownOptions);
-  renderer.code = (token) => renderCriticCodeBlock(token, comments, endmatter);
+  renderer.code = (token) =>
+    renderCriticCodeBlock(token, comments, changes, endmatter);
   const parser = new Marked({
     gfm: true,
     async: false,
@@ -1462,6 +1558,7 @@ function createCriticMarked(
   });
 
   parser.use({
+    tokenizer: markedTokenizer,
     extensions: [
       {
         name: "criticCommentAnchor",
@@ -1544,39 +1641,8 @@ function createCriticMarked(
           return result.token;
         },
         renderer(this: RendererThis, token: Tokens.Generic) {
-          const criticToken = token as CriticChangeToken;
-
-          if (criticToken.change.kind === "substitution-old") {
-            const oldContent = this.parser.parseInline(
-              criticToken.oldTokens ?? [],
-            );
-            const newContent = this.parser.parseInline(
-              criticToken.newTokens ?? [],
-            );
-            const substitutionHtml = `${renderCriticChangeSpan(
-              criticToken.change,
-              oldContent,
-              "substitution-old",
-            )}${renderCriticChangeSpan(
-              criticToken.change,
-              newContent,
-              "substitution-new",
-            )}`;
-
-            if (criticToken.commentIds.length === 0) {
-              return substitutionHtml;
-            }
-
-            return `<span data-comment-ids="${escapeHtml(
-              JSON.stringify(criticToken.commentIds),
-            )}">${substitutionHtml}</span>`;
-          }
-
-          return renderCriticChangeSpan(
-            criticToken.change,
-            this.parser.parseInline(criticToken.tokens ?? []),
-            criticToken.change.kind,
-            criticToken.commentIds,
+          return renderCriticChangeToken(token as CriticChangeToken, (tokens) =>
+            this.parser.parseInline(tokens),
           );
         },
         childTokens: ["tokens", "oldTokens", "newTokens"],
@@ -1637,7 +1703,12 @@ export function criticMarkdownToEditorState(
   const parsedEndmatter = parseReviewEndmatter(endmatter);
   const { parser, comments } = createCriticMarked(options, parsedEndmatter);
   const html = parser.parse(protectRichTextRoundTripMarkdown(body)) as string;
-  const doc = generateJSON(html, extensions) as JSONContent & {
+  // Tiptap's generateJSON removes newline-only DOM text nodes, even in code.
+  // Let ProseMirror preserve those nodes under its code-block whitespace rule.
+  const dom = new window.DOMParser().parseFromString(html, "text/html");
+  const doc = ProseMirrorDOMParser.fromSchema(getSchema(extensions))
+    .parse(dom.body)
+    .toJSON() as JSONContent & {
     yamlFrontmatter?: string;
     yamlEndmatter?: string;
   };

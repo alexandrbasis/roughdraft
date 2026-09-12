@@ -1400,6 +1400,7 @@ export function DocumentWorkspace({
   return (
     <div
       data-testid="document-workspace"
+      data-document-scroll-container="true"
       data-document-embed={embedded ? "true" : undefined}
       className={cn(
         "min-h-0 flex-1 overflow-y-auto px-8 pb-8 sm:px-12",

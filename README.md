@@ -8,6 +8,13 @@ Appearance follows your system by default and updates while the page is open. Us
 
 In a local review, paste a screenshot into a comment or reply, or choose **Attach image**. The image is saved in `.roughdraft-assets` beside the document, with a Markdown image reference in the comment. Click its thumbnail to open the full image. Keep the asset folder with the Markdown file when moving or sharing a review. Removing an image from a comment removes its reference; the file remains on disk for other references and review history. Remote document sessions do not support image uploads.
 
+Source builds also render Mermaid fences as diagrams. Choose **Source** to edit
+the code or leave feedback, and **Diagram** to return to the preview. Invalid
+diagrams show their source and an error so they can be repaired. Syntax
+highlighting follows the selected theme. These previews do not change the saved
+Markdown. In narrow windows, including embedded panels, comment entry stays at
+the bottom of the window while the selected passage remains visible.
+
 ## Install this fork
 
 Use Node.js 22.13 or newer. Install the built package from this fork's GitHub release:
@@ -48,6 +55,8 @@ See [fork provenance and verification](FORK.md) for the upstream reports and rel
 - Short transport interruptions retry with the same review-event cursor; a
   disconnected review watcher is removed from the server queue.
 - Literal HTML examples inside fenced code survive neighboring edits and reloads.
+- Approximation text such as `~57% of work time (~100h)` stays literal;
+  double tildes still produce `~~strikethrough~~`.
 - Comment threads can be opened from the keyboard. Reply cancellation restores
   focus, and narrow panels offer a direct jump to discussions.
 - Update notices use this fork's GitHub release archives. `pnpm upstream:check`
