@@ -100,6 +100,9 @@ suggestions:
 ```markdown
 # Fenced examples This page should not show a review rail just because examples appear inside code fences. ```text {==example==}{>>comment<<}{#c1} {++inserted++} {--deleted--} {~~old~>new~~} ```
 ```
+## Document Width
+Capture `/preview` in rich text and code modes at 1440px, 1100px, 900px, and 390px. On a wide desktop, the document sheet is 896px wide with a 288px comment rail and a 32px gap. At narrower widths, verify the sheet fits without horizontal page scrolling and the header stays aligned. Also capture a document without comments to check centering.
+
 ## Capture Matrix
 | Area | State | How to reach it | Useful selectors | Notes |
 | --- | --- | --- | --- | --- |

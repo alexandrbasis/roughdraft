@@ -1850,7 +1850,7 @@ export function DocumentWorkspace({
           </div>
         </div>
       ) : null}
-      <div className="mx-auto min-h-full max-w-[1080px]">
+      <div className="mx-auto min-h-full max-w-[1232px]">
         {documentPage ? (
           <div
             ref={documentHeaderRef}
@@ -1861,7 +1861,7 @@ export function DocumentWorkspace({
                 "review-layout-grid--centered document-page-shell-no-comments",
             )}
           >
-            <div className="review-layout-main document-page-main w-full max-w-[46.5rem] min-w-0">
+            <div className="review-layout-main document-page-main w-full max-w-[56rem] min-w-0">
               <div className="flex w-full flex-wrap items-center gap-1.5 px-1">
                 <Tooltip>
                   <TooltipTrigger

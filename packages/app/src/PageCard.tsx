@@ -1953,7 +1953,7 @@ const RichTextEditorSurface = memo(function RichTextEditorSurface({
     "document-page-main w-full min-w-0",
     layout === "embedded-demo"
       ? "max-w-none"
-      : "review-layout-main max-w-[46.5rem]",
+      : "review-layout-main max-w-[56rem]",
   );
   const contentInsetClass = cn(
     "document-content-inset",
@@ -2139,7 +2139,7 @@ const CodeEditorSurface = memo(function CodeEditorSurface({
     "document-page-main w-full min-w-0",
     layout === "embedded-demo"
       ? "max-w-none"
-      : "review-layout-main max-w-[46.5rem]",
+      : "review-layout-main max-w-[56rem]",
   );
   const contentInsetClass = cn(
     "document-content-inset",
