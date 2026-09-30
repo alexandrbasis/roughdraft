@@ -1,5 +1,5 @@
 import { tables, taskListItems } from "@joplin/turndown-plugin-gfm";
-import { Marked, marked, type TokenizerObject } from "marked";
+import { Marked, marked, type TokenizerObject, type Tokens } from "marked";
 import TurndownService from "turndown";
 import { parse as parseYaml } from "yaml";
 
@@ -82,7 +82,19 @@ function protectRawHtmlBlocks(markdown: string): string {
 function protectIndentedCodeAfterLists(markdown: string): string {
   return markdown.replace(
     /^(?:[-*+]|\d+[.)]) [^\r\n]*(?:\r?\n)[ \t]*(?:\r?\n)(?:(?: {4}|\t)[^\r\n]*(?:\r?\n|$))+/gm,
-    (raw) => createRawMarkdownBlock(raw),
+    (raw) => {
+      // A multi-digit parent marker can require four spaces for a nested list.
+      const hasNestedList = marked
+        .lexer(raw)
+        .some(
+          (token) =>
+            token.type === "list" &&
+            (token as Tokens.List).items.some((item) =>
+              item.tokens.some((child) => child.type === "list"),
+            ),
+        );
+      return hasNestedList ? raw : createRawMarkdownBlock(raw);
+    },
   );
 }
 
@@ -451,11 +463,6 @@ export function createTurndownService(): TurndownService {
         return `${options.bulletListMarker} [${checked ? "x" : " "}] ${taskContent.replace(/\n/gm, "\n  ")}${node.nextSibling ? "\n" : ""}`;
       }
 
-      const trimmed = content
-        .replace(/^\n+/, "")
-        .replace(/\n+$/, "\n")
-        .replace(/\n/gm, "\n  ");
-
       let prefix = `${options.bulletListMarker} `;
       const parent = node.parentNode;
       if (parent && parent.nodeName === "OL") {
@@ -463,6 +470,13 @@ export function createTurndownService(): TurndownService {
         const index = Array.prototype.indexOf.call(parent.children, node);
         prefix = `${start ? Number(start) + index : index + 1}. `;
       }
+
+      // Continuations must align with the item text, including numbered markers.
+      const indentation = " ".repeat(prefix.length);
+      const trimmed = content
+        .replace(/^\n+/, "")
+        .replace(/\n+$/, "\n")
+        .replace(/\n/gm, `\n${indentation}`);
 
       return (
         prefix +

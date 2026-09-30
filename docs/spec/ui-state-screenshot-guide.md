@@ -66,6 +66,21 @@ Paragraph with **bold**, [link](https://example.com), `inline code`.
 | --- | --- |
 | Intro | Draft |
 ```
+### Nested Lists Document
+```markdown
+# Nested lists
+
+1. Parent
+   1. Child
+      1. Grandchild
+
+9. First sibling
+10. Mixed parent
+    - Bulleted child
+      1. Numbered grandchild
+```
+Edit a child in rich text, wait for Saved, and reload before capturing. Include desktop and narrow views. The child and grandchild must remain indented under their original parent, including the parent numbered `10.`.
+
 ### Review Document
 ```markdown
 # Review document {==Select this sentence==}{>>Root comment<<}{#root} This sentence includes {++clearer wording++}{#s1}. Replace {~~old phrase~>new phrase~~}{#s2} and remove {--dead text--}{#s3}.
@@ -132,6 +147,7 @@ Capture `/preview` in rich text and code modes at 1440px, 1100px, 900px, and 390
 | Preview | Rich text default | `/preview?editor=rich-text` | `page-card-rich-text`, `rich-text-editor` | Uses in-memory preview backend and includes a sample anchored comment. |
 | Preview | Code editor default | `/preview?editor=code` | `page-card-code`, `markdown-code-editor` | Capture line wrapping, code editor chrome, and rail behavior. |
 | Document | Rich/code toggle | Use `document-editor-view-toggle` | `document-editor-view-toggle` | URL changes to `?editor=code` or `?editor=rich-text`. |
+| Document | Nested lists after save and reload | Open the nested lists fixture in rich text, edit a child, save, and reload | `rich-text-editor`, `document-save-status` | Capture three numbered levels and mixed bullet/numbered levels, including a multi-digit parent marker, at desktop and narrow widths. |
 | Document revisions | Baseline | Register or open a document before its next saved edit | `revision-toolbar`, `revision-count` | The toolbar says changes will appear after the next saved revision. Capture the initial empty state. |
 | Document revisions | Multiple revisions | Save two distinct external or review edits to a registered Markdown file and open it in reading view | `revision-highlight`, `revision-change-marker`, `revision-filter`, `revision-count` | All saved revisions appear together with numbered, colored highlights. Capture light and dark themes at desktop and 390px width. |
 | Document revisions | Filter and hidden highlights | Select a specific revision, then All revisions; toggle highlight visibility | `revision-filter-1`, `revision-filter-all`, `revision-toggle`, `revision-prev`, `revision-next` | Only the selected revision is marked. Hiding highlights leaves document text and revision history intact. Capture a narrow toolbar with its controls reachable. |

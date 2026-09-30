@@ -1,10 +1,13 @@
 import fs from "node:fs";
 import path from "node:path";
 import { describe, expect, it } from "vitest";
+import { Editor } from "@tiptap/core";
 import {
   criticMarkdownToEditorState,
   criticMarkdownToRenderedHtml,
+  editorStateToCriticMarkdown,
 } from "./critic-markup";
+import { createEditorExtensions } from "./editor-extensions";
 import {
   splitYamlFrontmatter,
   toHtml,
@@ -18,6 +21,57 @@ function readMarkdownFixture(name: string): string {
     "utf8",
   );
 }
+
+describe.each([
+  {
+    name: "ordered within ordered",
+    source: "1. Parent\n    1. Child\n",
+    childType: "orderedList",
+  },
+  {
+    name: "ordered within bullet",
+    source: "- Parent\n    1. Child\n",
+    childType: "orderedList",
+  },
+  {
+    name: "bullet within ordered",
+    source: "10. Parent\n    - Child\n",
+    childType: "bulletList",
+  },
+])("nested list editor round-trip: $name", ({ source, childType }) => {
+  it("keeps the child inside its parent after editing and saving", () => {
+    const initial = criticMarkdownToEditorState(source);
+    const editor = new Editor({
+      extensions: createEditorExtensions(""),
+      content: initial.doc,
+    });
+
+    try {
+      editor.commands.insertContentAt(3, "Edited ");
+      const editedParent = editor.getJSON().content?.[0];
+      expect(editedParent?.content?.[0]?.content?.[1]?.type).toBe(childType);
+
+      const saved = editorStateToCriticMarkdown(
+        editor.getJSON(),
+        initial.comments,
+      );
+      const reloadedParent =
+        criticMarkdownToEditorState(saved).doc.content?.[0];
+      expect(reloadedParent?.content?.[0]?.content?.[1]?.type).toBe(childType);
+    } finally {
+      editor.destroy();
+    }
+  });
+});
+
+it.each([
+  "- Parent\n\n      - literal code\n",
+  "10. Parent\n\n        1. literal code\n",
+])("preserves indented code containing a list marker: %s", (source) => {
+  const { doc, comments } = criticMarkdownToEditorState(source);
+
+  expect(editorStateToCriticMarkdown(doc, comments)).toBe(source);
+});
 
 describe("splitYamlFrontmatter", () => {
   it("preserves CRLF frontmatter byte-for-byte while splitting the body", () => {
