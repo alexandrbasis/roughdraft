@@ -62,7 +62,6 @@
 }
 
 .tiptap .revision-highlight {
-  box-shadow: inset 0 -2px var(--revision-line);
   box-decoration-break: clone;
   -webkit-box-decoration-break: clone;
   cursor: pointer;
@@ -73,7 +72,28 @@
 
 /* Preserve the live comment/suggestion background, regardless of nesting order. */
 .tiptap .revision-highlight-review-overlap {
+  box-shadow: inset 0 -2px var(--revision-line);
   cursor: inherit;
+}
+/* Override Tiptap's injected whitespace reset for noneditable widgets. */
+.tiptap .revision-deletion[contenteditable="false"] {
+  border-radius: 2px;
+  background-color: var(--revision-fill);
+  color: var(--revision-ink);
+  box-decoration-break: clone;
+  -webkit-box-decoration-break: clone;
+  white-space: pre-wrap;
+  overflow-wrap: anywhere;
+  cursor: pointer;
+  user-select: none;
+}
+.tiptap .revision-deletion del {
+  text-decoration: line-through;
+  text-decoration-color: var(--revision-line);
+}
+.tiptap .revision-deletion:focus-visible {
+  outline: 2px solid var(--revision-line);
+  outline-offset: 2px;
 }
 .tiptap .revision-change-active {
   outline: 1px solid var(--revision-line);

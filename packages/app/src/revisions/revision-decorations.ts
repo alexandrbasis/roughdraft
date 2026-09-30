@@ -69,28 +69,38 @@ function decorations(
         );
       });
     }
-    if (change.kind !== "deletion") continue;
+    if (change.kind !== "deletion" || !change.before.trim()) continue;
     items.push(
       Decoration.widget(
         from,
         () => {
-          const button = document.createElement("button");
-          button.type = "button";
-          button.className = `revision-change-marker ${color}${active}`;
-          button.dataset.testid = "revision-change-marker";
-          button.dataset.revisionChangeId = change.id;
-          button.dataset.revisionNumber = String(change.revision);
-          button.textContent = `R${change.revision}${change.kind === "deletion" ? " · Deleted" : ""}`;
-          button.setAttribute(
+          // A wrapping text decoration, kept outside the editable document.
+          const removed = document.createElement("span");
+          removed.className = `revision-deletion ${color}${active}`;
+          removed.dataset.testid = "revision-deletion";
+          removed.dataset.revisionChangeId = change.id;
+          removed.dataset.revisionNumber = String(change.revision);
+          removed.contentEditable = "false";
+          removed.tabIndex = 0;
+          removed.setAttribute("role", "button");
+          removed.setAttribute(
             "aria-label",
-            `Show revision ${change.revision} ${change.kind}`,
+            `Show text deleted in revision ${change.revision}: ${change.before.trim()}`,
           );
-          button.addEventListener("click", (event) => {
+          removed.title = `Deleted in R${change.revision} · Show before / after`;
+          const text = document.createElement("del");
+          text.textContent = change.before;
+          removed.append(text);
+          const select = (event: Event) => {
             event.preventDefault();
             event.stopPropagation();
             onSelect(change.id);
+          };
+          removed.addEventListener("click", select);
+          removed.addEventListener("keydown", (event) => {
+            if (event.key === "Enter" || event.key === " ") select(event);
           });
-          return button;
+          return removed;
         },
         {
           key: `${change.id}:${state.activeChangeId === change.id}`,

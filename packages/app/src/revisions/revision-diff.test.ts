@@ -281,6 +281,51 @@ it("renders selectable revision decorations without changing document JSON", () 
   editor.destroy();
 });
 
+it("shows deleted text inline as a colored strike-through without editing the document", () => {
+  const editor = new Editor({
+    element: document.createElement("div"),
+    extensions: createEditorExtensions(""),
+    content: criticMarkdownToEditorState("Hello world").doc,
+  });
+  const onSelect = vi.fn();
+  const onUpdate = vi.fn();
+  editor.on("update", onUpdate);
+  editor.registerPlugin(createRevisionPlugin(onSelect));
+  const before = editor.getJSON();
+  const result = changes("Hello brave world", "Hello world");
+  const settings = {
+    changes: result,
+    selectedRevision: null,
+    activeChangeId: null,
+    visible: true,
+  };
+
+  updateRevisionDecorations(editor, settings);
+  const deletion = editor.view.dom.querySelector<HTMLElement>(
+    "[data-testid='revision-deletion']",
+  );
+  expect(
+    editor.view.dom.querySelector("[data-testid='revision-deletion'] del")
+      ?.textContent,
+  ).toBe("brave ");
+  expect(deletion?.classList.contains("revision-color-0")).toBe(true);
+  expect(deletion?.dataset.revisionChangeId).toBe(result[0].id);
+  deletion?.click();
+  expect(onSelect).toHaveBeenCalledWith(result[0].id);
+
+  updateRevisionDecorations(editor, { ...settings, selectedRevision: 2 });
+  expect(
+    editor.view.dom.querySelector("[data-testid='revision-deletion']"),
+  ).toBeNull();
+  updateRevisionDecorations(editor, { ...settings, visible: false });
+  expect(
+    editor.view.dom.querySelector("[data-testid='revision-deletion']"),
+  ).toBeNull();
+  expect(editor.getJSON()).toEqual(before);
+  expect(onUpdate).not.toHaveBeenCalled();
+  editor.destroy();
+});
+
 it("groups revisions in one paragraph into a single gutter badge", () => {
   const text = "A small cat sleeps.";
   const editor = new Editor({
