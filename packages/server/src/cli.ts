@@ -70,6 +70,19 @@ export interface RoughdraftServerState {
   url: string;
 }
 
+export class TrackedServerUnavailableError extends Error {
+  constructor(
+    readonly state: RoughdraftServerState,
+    readonly stateFile: string,
+  ) {
+    super(
+      `Cannot reach tracked server at ${buildPublicBaseUrl(state.port)} while PID ${state.pid} still exists. ` +
+        `Preserved ${stateFile}; no replacement server was started. ` +
+        "Retry the same command with access to localhost and local processes. Keep the same CLI installation and state directory.",
+    );
+  }
+}
+
 interface StatusPayload {
   stateDirectory?: string;
   capabilities?: {
@@ -1141,6 +1154,13 @@ function printAgentHelp(log: (message: string) => void) {
   log(`Live setup instructions: ${AGENT_SETUP_URL}`);
   log("");
   log(
+    "For reviews, reuse the configured CLI installation and state directory, and open the URL printed by `roughdraft open` unchanged.",
+  );
+  log(
+    "If sandbox permissions block the state lock or localhost check, retry the same command with the required host access. Use --state-dir only when you intend to create an isolated server with its own domain settings and review history.",
+  );
+  log("");
+  log(
     "This command only prints setup text. It does not edit agent instruction files.",
   );
 }
@@ -1875,6 +1895,12 @@ async function findReusableServer(
       };
     }
 
+    // A blocked or timed-out probe does not prove that the server stopped.
+    // Forgetting a live PID here makes the next open spawn a second server.
+    if (pidRunning && !statusPayload) {
+      throw new TrackedServerUnavailableError(persistedState, stateFilePath);
+    }
+
     removeServerStateFile(stateFilePath);
 
     if (statusPayload && matchesServerRoot(statusPayload)) {
@@ -2473,11 +2499,17 @@ async function runWatch(
     onTransportFailure: options.serverUrl
       ? undefined
       : async () => {
-          const recovered = await ensureServerRunning(deps, {
-            projectDir: target.projectDir,
-          });
-          serverUrl = recovered.server.url;
-          return new URL("/api/review-events/watch", recovered.server.url);
+          try {
+            const recovered = await ensureServerRunning(deps, {
+              projectDir: target.projectDir,
+            });
+            serverUrl = recovered.server.url;
+            return new URL("/api/review-events/watch", recovered.server.url);
+          } catch (error) {
+            if (!(error instanceof TrackedServerUnavailableError)) throw error;
+            // Keep polling the original URL with the existing cursor/deadline.
+            return undefined;
+          }
         },
   });
 
@@ -2730,7 +2762,26 @@ export async function runCli(
       deps = applyCliEnvOverrides(deps, options);
       const json = parsed.global.json || options.json;
       shouldPrintUpdateNotice = !json;
-      const server = await findReusableServer(deps);
+      let server: ReusableServer | null;
+      try {
+        server = await findReusableServer(deps);
+      } catch (error) {
+        if (!(error instanceof TrackedServerUnavailableError)) throw error;
+        if (json) {
+          emitJson(deps.log, {
+            running: null,
+            status: "unreachable",
+            url: buildPublicBaseUrl(error.state.port),
+            port: error.state.port,
+            pid: error.state.pid,
+            stateFile: error.stateFile,
+            error: error.message,
+          });
+        } else {
+          deps.error(error.message);
+        }
+        return 1;
+      }
       if (!server) {
         if (json) {
           emitJson(
@@ -3292,6 +3343,10 @@ export async function runCli(
     }
 
     return USAGE_ERROR;
+  } catch (error) {
+    if (!(error instanceof TrackedServerUnavailableError)) throw error;
+    deps.error(error.message);
+    return 1;
   } finally {
     if (shouldPrintUpdateNotice) {
       await printUpdateNoticeIfAvailable(deps);

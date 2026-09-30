@@ -384,15 +384,22 @@ export async function callTool(
           : undefined,
       url: new URL("/api/review-events/watch", server.url),
       onTransportFailure: async () => {
-        const { createCliDependencies, ensureServerRunning } = await import(
-          "./cli.js"
-        );
-        const recovered = await ensureServerRunning(
-          createCliDependencies({ env, fetchImpl }),
-          { projectDir: projectPath },
-        );
-        serverUrl = recovered.server.url;
-        return new URL("/api/review-events/watch", recovered.server.url);
+        const {
+          createCliDependencies,
+          ensureServerRunning,
+          TrackedServerUnavailableError,
+        } = await import("./cli.js");
+        try {
+          const recovered = await ensureServerRunning(
+            createCliDependencies({ env, fetchImpl }),
+            { projectDir: projectPath },
+          );
+          serverUrl = recovered.server.url;
+          return new URL("/api/review-events/watch", recovered.server.url);
+        } catch (error) {
+          if (!(error instanceof TrackedServerUnavailableError)) throw error;
+          return undefined;
+        }
       },
     });
     return acknowledgeReceivedReviews(

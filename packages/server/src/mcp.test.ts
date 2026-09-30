@@ -147,6 +147,67 @@ describe("mcp", () => {
     });
   });
 
+  it("keeps watching a live server through a temporary status probe failure", async () => {
+    const trackedState = {
+      url: "http://localhost:7376",
+      port: 7376,
+      pid: process.pid,
+      startedAt: "2026-09-30T00:00:00.000Z",
+    };
+    fs.writeFileSync(stateFile, JSON.stringify(trackedState));
+    let watchAttempts = 0;
+    const fetchImpl: typeof fetch = async (input) => {
+      const url = input instanceof URL ? input : new URL(String(input));
+      if (url.pathname === "/api/status") {
+        if (watchAttempts === 1) {
+          throw new Error("temporary localhost probe failure");
+        }
+        return new Response(
+          JSON.stringify({
+            backend: "local-files",
+            port: trackedState.port,
+          }),
+          { status: 200, headers: { "Content-Type": "application/json" } },
+        );
+      }
+      if (url.pathname === "/api/review-events/watch") {
+        watchAttempts += 1;
+        if (watchAttempts === 1) {
+          const error = new TypeError("fetch failed") as TypeError & {
+            cause?: { code?: string };
+          };
+          error.cause = { code: "ECONNREFUSED" };
+          throw error;
+        }
+        return new Response(
+          JSON.stringify({
+            events: [{ documentPath, type: "review.completed" }],
+            timedOut: false,
+            nextSequence: 1,
+          }),
+          { status: 200, headers: { "Content-Type": "application/json" } },
+        );
+      }
+      throw new Error(`unexpected request: ${url.pathname}`);
+    };
+
+    const result = await callTool(
+      "roughdraft_watch_review_events",
+      { documentPath, projectPath: projectDir },
+      { ROUGHDRAFT_STATE_FILE: stateFile },
+      fetchImpl,
+    );
+
+    expect(result).toMatchObject({
+      timedOut: false,
+      events: [{ documentPath, type: "review.completed" }],
+    });
+    expect(watchAttempts).toBe(2);
+    expect(JSON.parse(fs.readFileSync(stateFile, "utf8"))).toEqual(
+      trackedState,
+    );
+  });
+
   it("returns overall comments from review watch events unchanged", async () => {
     const fetchImpl: typeof fetch = async () =>
       new Response(

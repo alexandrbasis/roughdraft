@@ -1303,6 +1303,82 @@ describe("cli", () => {
     });
   });
 
+  it("keeps watching the original live server through a temporary probe failure", async () => {
+    const documentPath = path.join(projectDir, "draft.md");
+    fs.writeFileSync(documentPath, "# Draft\n");
+    const stateFilePath = path.join(stateDir, "server.json");
+    const state = {
+      port: 7376,
+      pid: 4242,
+      startedAt: "2026-09-30T00:00:00.000Z",
+      url: "http://localhost:7376",
+    };
+    fs.mkdirSync(stateDir, { recursive: true });
+    fs.writeFileSync(stateFilePath, JSON.stringify(state));
+    let watchAttempts = 0;
+    let spawnCount = 0;
+    const logs: string[] = [];
+    const deps = createCliDependencies({
+      env: { ...process.env, ROUGHDRAFT_STATE_DIR: stateDir },
+      cwd: projectDir,
+      isProcessRunning: (pid) => pid === state.pid,
+      findAvailablePortImpl: async () => 7377,
+      spawnServerProcess: async () => {
+        spawnCount += 1;
+        return { pid: 7377 };
+      },
+      sleepImpl: async () => {},
+      fetchImpl: async (input) => {
+        const url = input instanceof URL ? input : new URL(String(input));
+        if (url.pathname === "/api/status") {
+          if (watchAttempts === 1) {
+            throw new Error("temporary localhost probe failure");
+          }
+          return new Response(
+            JSON.stringify({
+              backend: "local-files",
+              port: state.port,
+              serverRoot,
+            }),
+            { status: 200, headers: { "Content-Type": "application/json" } },
+          );
+        }
+        if (url.pathname === "/api/review-events/watch") {
+          watchAttempts += 1;
+          if (watchAttempts === 1) {
+            const error = new TypeError("fetch failed") as TypeError & {
+              cause?: { code?: string };
+            };
+            error.cause = { code: "ECONNREFUSED" };
+            throw error;
+          }
+          return new Response(
+            JSON.stringify({
+              events: [{ documentPath, type: "review.completed" }],
+              timedOut: false,
+              nextSequence: 1,
+            }),
+            { status: 200, headers: { "Content-Type": "application/json" } },
+          );
+        }
+        throw new Error(`unexpected request: ${url.pathname}`);
+      },
+      log: (message) => logs.push(message),
+      error: () => {},
+      resolveUpdateStatus: noUpdateStatus,
+    });
+
+    const exitCode = await runCli(["watch", documentPath, "--json"], deps);
+
+    expect(exitCode).toBe(0);
+    expect(watchAttempts).toBe(2);
+    expect(spawnCount).toBe(0);
+    expect(JSON.parse(fs.readFileSync(stateFilePath, "utf8"))).toEqual(state);
+    expect(
+      parseOnlyJsonLog<{ events: Array<{ type: string }> }>(logs).events,
+    ).toEqual([expect.objectContaining({ type: "review.completed" })]);
+  });
+
   it("opens a document and waits for the next review event by default from open --json", async () => {
     const test = createTestDependencies();
     const documentPath = path.join(projectDir, "draft.md");
@@ -1404,6 +1480,178 @@ describe("cli", () => {
 
     expect(exitCode).toBe(1);
     expect(fs.existsSync(stateFilePath)).toBeFalsy();
+  });
+
+  it("preserves a live tracked server when status cannot reach its nondefault port", async () => {
+    const stateFilePath = path.join(stateDir, "server.json");
+    const state = {
+      port: 7376,
+      pid: 4242,
+      startedAt: "2026-09-30T00:00:00.000Z",
+      url: "http://localhost:7376",
+    };
+    fs.mkdirSync(stateDir, { recursive: true });
+    fs.writeFileSync(stateFilePath, JSON.stringify(state));
+    const logs: string[] = [];
+    const deps = createCliDependencies({
+      env: { ...process.env, ROUGHDRAFT_STATE_DIR: stateDir },
+      cwd: projectDir,
+      fetchImpl: async () => {
+        throw new Error("sandbox denied localhost connection");
+      },
+      isProcessRunning: (pid) => pid === state.pid,
+      log: (message) => logs.push(message),
+      error: () => {},
+      resolveUpdateStatus: noUpdateStatus,
+    });
+
+    const exitCode = await runCli(["status", "--json"], deps);
+
+    expect(exitCode).toBe(1);
+    expect(JSON.parse(fs.readFileSync(stateFilePath, "utf8"))).toEqual(state);
+    expect(
+      parseOnlyJsonLog<{
+        running: boolean | null;
+        status: string;
+        port: number;
+        pid: number;
+        stateFile: string;
+      }>(logs),
+    ).toMatchObject({
+      running: null,
+      status: "unreachable",
+      port: state.port,
+      pid: state.pid,
+      stateFile: stateFilePath,
+    });
+  });
+
+  it("does not spawn a duplicate when a live tracked server is unreachable", async () => {
+    const stateFilePath = path.join(stateDir, "server.json");
+    const state = {
+      port: 7376,
+      pid: 4242,
+      startedAt: "2026-09-30T00:00:00.000Z",
+      url: "http://localhost:7376",
+    };
+    fs.mkdirSync(stateDir, { recursive: true });
+    fs.writeFileSync(stateFilePath, JSON.stringify(state));
+    let spawnCount = 0;
+    const deps = createCliDependencies({
+      env: { ...process.env, ROUGHDRAFT_STATE_DIR: stateDir },
+      cwd: projectDir,
+      fetchImpl: async () => {
+        throw new Error("sandbox denied localhost connection");
+      },
+      isProcessRunning: (pid) => pid === state.pid,
+      findAvailablePortImpl: async () => 7377,
+      sleepImpl: async () => {},
+      spawnServerProcess: async () => {
+        spawnCount += 1;
+        return { pid: 7377 };
+      },
+      resolveUpdateStatus: noUpdateStatus,
+    });
+
+    await expect(ensureServerRunning(deps, { projectDir })).rejects.toThrow(
+      /cannot reach tracked server/i,
+    );
+    expect(spawnCount).toBe(0);
+    expect(JSON.parse(fs.readFileSync(stateFilePath, "utf8"))).toEqual(state);
+  });
+
+  it.each([
+    "start",
+    "open",
+  ])("%s reports an unreachable tracked server without spawning a duplicate", async (command) => {
+    const stateFilePath = path.join(stateDir, "server.json");
+    const state = {
+      port: 7376,
+      pid: 4242,
+      startedAt: "2026-09-30T00:00:00.000Z",
+      url: "http://localhost:7376",
+    };
+    fs.mkdirSync(stateDir, { recursive: true });
+    fs.writeFileSync(stateFilePath, JSON.stringify(state));
+    const documentPath = path.join(projectDir, "draft.md");
+    fs.writeFileSync(documentPath, "# Draft\n");
+    const errors: string[] = [];
+    let spawnCount = 0;
+    const deps = createCliDependencies({
+      env: { ...process.env, ROUGHDRAFT_STATE_DIR: stateDir },
+      cwd: projectDir,
+      fetchImpl: async () => {
+        throw new Error("sandbox denied localhost connection");
+      },
+      isProcessRunning: (pid) => pid === state.pid,
+      findAvailablePortImpl: async () => 7377,
+      sleepImpl: async () => {},
+      spawnServerProcess: async () => {
+        spawnCount += 1;
+        return { pid: 7377 };
+      },
+      resolveUpdateStatus: noUpdateStatus,
+      log: () => {},
+      error: (message) => errors.push(message),
+    });
+
+    const exitCode = await runCli(
+      command === "open" ? [command, documentPath, "--no-watch"] : [command],
+      deps,
+    );
+
+    expect(exitCode).toBe(1);
+    expect(errors.join("\n")).toMatch(/cannot reach tracked server/i);
+    expect(spawnCount).toBe(0);
+    expect(JSON.parse(fs.readFileSync(stateFilePath, "utf8"))).toEqual(state);
+  });
+
+  it("reuses the original tracked process after its status endpoint becomes reachable", async () => {
+    const stateFilePath = path.join(stateDir, "server.json");
+    const state = {
+      port: 7376,
+      pid: 4242,
+      startedAt: "2026-09-30T00:00:00.000Z",
+      url: "http://localhost:7376",
+    };
+    fs.mkdirSync(stateDir, { recursive: true });
+    fs.writeFileSync(stateFilePath, JSON.stringify(state));
+    let reachable = false;
+    let spawnCount = 0;
+    const deps = createCliDependencies({
+      env: { ...process.env, ROUGHDRAFT_STATE_DIR: stateDir },
+      cwd: projectDir,
+      fetchImpl: async () => {
+        if (!reachable) throw new Error("sandbox denied localhost connection");
+        return new Response(
+          JSON.stringify({
+            backend: "local-files",
+            port: state.port,
+            serverRoot,
+          }),
+          { status: 200, headers: { "Content-Type": "application/json" } },
+        );
+      },
+      isProcessRunning: (pid) => pid === state.pid,
+      findAvailablePortImpl: async () => 7377,
+      spawnServerProcess: async () => {
+        spawnCount += 1;
+        return { pid: 7377 };
+      },
+    });
+
+    await expect(ensureServerRunning(deps, { projectDir })).rejects.toThrow(
+      /cannot reach tracked server/i,
+    );
+    reachable = true;
+    const result = await ensureServerRunning(deps, { projectDir });
+
+    expect(result).toMatchObject({
+      reused: true,
+      server: { port: state.port, pid: state.pid, tracked: true },
+    });
+    expect(spawnCount).toBe(0);
+    expect(JSON.parse(fs.readFileSync(stateFilePath, "utf8"))).toEqual(state);
   });
 
   it("reports and reuses an unmanaged server when the tracked pid is stale", async () => {

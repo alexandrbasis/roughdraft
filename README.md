@@ -20,12 +20,12 @@ the bottom of the window while the selected passage remains visible.
 Use Node.js 22.13 or newer. Install the built package from this fork's GitHub release:
 
 ```bash
-npm install -g https://github.com/alexandrbasis/roughdraft/releases/download/v0.1.14-basis.5/alexandrbasis-roughdraft-0.1.14-basis.5.tgz
+npm install -g https://github.com/alexandrbasis/roughdraft/releases/download/v0.1.14-basis.6/alexandrbasis-roughdraft-0.1.14-basis.6.tgz
 roughdraft --version
 roughdraft open /absolute/path/to/file.md
 ```
 
-The version should be `0.1.14-basis.5`. The package is named
+The version should be `0.1.14-basis.6`. The package is named
 `@alexandrbasis/roughdraft`; the executable remains `roughdraft`. Installing it
 globally shares the executable name with the original package.
 The unscoped npm package `roughdraft` installs the original upstream version.
@@ -334,6 +334,17 @@ Read `roughdraft help agent` and `roughdraft help criticmarkup`, then use Roughd
 In Codex, run `roughdraft open /absolute/path/to/file.md --no-open`, open the printed
 URL in the in-app browser, and keep the command attached until you finish reviewing.
 Append `&embed=1` to that URL for compact mode.
+
+Reuse the same CLI installation and state directory for subsequent reviews. If a
+sandbox blocks the state lock or localhost check, retry the same command with the
+required host access. `--state-dir` intentionally creates an isolated server with
+its own domain settings and review history; it is not a permission workaround.
+When a tracked process still exists but cannot be reached, `status --json` exits
+with code 1 and reports `running: null`, `status: "unreachable"`. Its state is
+preserved, and `start` or `open` will not launch a replacement until the existing
+server can be verified or its process has stopped.
+An active CLI or MCP watch keeps retrying its original server with the same event
+cursor and timeout while the status check is temporarily unavailable.
 
 ## CLI reference
 ```text
