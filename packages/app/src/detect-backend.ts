@@ -1,7 +1,7 @@
-import type { StorageBackend } from "./storage";
 import { ApiBackend } from "./api-backend";
 import { LocalStorageBackend } from "./local-storage-backend";
 import { RemoteBackend } from "./remote-backend";
+import type { StorageBackend } from "./storage";
 
 interface StatusPayload {
   backend?: string;
@@ -12,6 +12,7 @@ interface StatusPayload {
     remoteDocuments?: boolean;
     serverDrafts?: boolean;
     reviewHistory?: boolean;
+    reviewRevisions?: boolean;
   };
 }
 
@@ -57,6 +58,9 @@ export async function detectBackend(): Promise<StorageBackend> {
             statusPayload.serverDrafts === true ||
             statusPayload.capabilities?.serverDrafts === true,
           reviewHistory: statusPayload.capabilities?.reviewHistory === true,
+          ...(statusPayload.capabilities?.reviewRevisions === true
+            ? { reviewRevisions: true }
+            : {}),
         },
       });
     }

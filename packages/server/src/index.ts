@@ -464,6 +464,12 @@ export function createApp(options: CreateAppOptions = {}): CreateAppResult {
     }
     reviewDatabase.finishWrite(writeId);
   }
+  function observedFileVersion(file: string): string {
+    const content = fs.readFileSync(file);
+    const stats = fs.statSync(file);
+    reviewDatabase.observeRevision(file, content.toString("utf8"));
+    return fileVersionFromContent(stats, content);
+  }
   const remoteSessions = new Map<string, RemoteSession>();
 
   function isAuthorizedRemoteDocumentRequest(req: Request): boolean {
@@ -609,6 +615,7 @@ export function createApp(options: CreateAppOptions = {}): CreateAppResult {
       return;
     }
     const content = fs.readFileSync(filePath, "utf-8");
+    reviewDatabase.observeRevision(filePath, content);
     res.json({ id, title: titleFromContent(content, id), content });
   });
 
@@ -630,7 +637,9 @@ export function createApp(options: CreateAppOptions = {}): CreateAppResult {
       return;
     }
 
-    res.json(markdownPageFromFile(relativePath, absolutePath));
+    const page = markdownPageFromFile(relativePath, absolutePath);
+    reviewDatabase.observeRevision(absolutePath, page.content);
+    res.json(page);
   });
 
   app.get("/api/markdown-file/events", (req, res) => {
@@ -652,7 +661,7 @@ export function createApp(options: CreateAppOptions = {}): CreateAppResult {
         res.json({
           path: relativePath,
           exists: true,
-          version: fileVersionFromFile(absolutePath),
+          version: observedFileVersion(absolutePath),
         });
       } catch (error) {
         const code = (error as NodeJS.ErrnoException)?.code;
@@ -674,6 +683,8 @@ export function createApp(options: CreateAppOptions = {}): CreateAppResult {
       return;
     }
 
+    // Seed before sending headers so a failed read can return a normal error.
+    observedFileVersion(absolutePath);
     res.setHeader("Content-Type", "text/event-stream");
     res.setHeader("Cache-Control", "no-cache, no-transform");
     res.setHeader("Connection", "keep-alive");
@@ -685,7 +696,7 @@ export function createApp(options: CreateAppOptions = {}): CreateAppResult {
       let version: string | null = null;
       if (exists) {
         try {
-          version = fileVersionFromFile(absolutePath);
+          version = observedFileVersion(absolutePath);
         } catch (error) {
           const code = (error as NodeJS.ErrnoException)?.code;
           if (code === "ENOENT") {
@@ -944,7 +955,9 @@ export function createApp(options: CreateAppOptions = {}): CreateAppResult {
       });
       return;
     }
-    res.json(markdownPageFromFile(relativePath, absolutePath));
+    const page = markdownPageFromFile(relativePath, absolutePath);
+    reviewDatabase.observeRevision(absolutePath, page.content);
+    res.json(page);
   });
 
   app.post("/api/pages", (req, res) => {
@@ -994,6 +1007,7 @@ export function createApp(options: CreateAppOptions = {}): CreateAppResult {
       capabilities: {
         reviewRegistry: true,
         reviewHistory: true,
+        reviewRevisions: true,
         reviewAcknowledgements: true,
         serverDrafts: true,
         durableReviewEvents: Boolean(options.stateDirectory),

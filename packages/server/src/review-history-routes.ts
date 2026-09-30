@@ -52,6 +52,15 @@ export function installReviewHistoryRoutes(
     };
   }
   app.get(
+    "/api/reviews/revisions",
+    route((req, res) => {
+      const file = documentPath(req.query.documentPath, true);
+      db.observeRevision(file, fs.readFileSync(file, "utf8"));
+      res.setHeader("Cache-Control", "no-store");
+      res.json({ documentPath: file, revisions: db.revisions(file) });
+    }),
+  );
+  app.get(
     "/api/reviews/history",
     route((req, res) =>
       res.json(db.history(documentPath(req.query.documentPath))),

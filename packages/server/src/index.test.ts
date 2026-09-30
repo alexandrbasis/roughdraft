@@ -610,6 +610,7 @@ describe("createApp", () => {
       capabilities: {
         reviewRegistry: true,
         reviewHistory: true,
+        reviewRevisions: true,
         reviewAcknowledgements: true,
         serverDrafts: true,
         durableReviewEvents: false,

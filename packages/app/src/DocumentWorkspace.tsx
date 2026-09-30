@@ -1,3 +1,4 @@
+import type { Editor } from "@tiptap/react";
 import {
   AlertTriangle,
   Check,
@@ -14,6 +15,7 @@ import {
 } from "lucide-react";
 import { useCallback, useEffect, useMemo, useRef, useState } from "react";
 import type { DocumentEditorViewMode } from "./app-navigation";
+import { CommentComposer } from "./CommentComposer";
 import { writeTextToClipboard } from "./clipboard";
 import { RemoteSessionBanner } from "./components/RemoteSessionBanner";
 import { Button } from "./components/ui/button";
@@ -29,7 +31,6 @@ import {
   SelectItemText,
   SelectTrigger,
 } from "./components/ui/select";
-import { CommentComposer } from "./CommentComposer";
 import {
   Tooltip,
   TooltipContent,
@@ -59,6 +60,7 @@ import {
   PageCard,
 } from "./PageCard";
 import { RobotsHighFiveToy } from "./RobotsHighFiveToy";
+import { RevisionReview } from "./revisions/RevisionReview";
 import {
   createServerDraftClient,
   type ServerDraft,
@@ -457,6 +459,7 @@ export function DocumentWorkspace({
   const [documentInteractionMode, setDocumentInteractionMode] =
     useState<DocumentInteractionMode>("suggesting");
   const [saveState, setSaveState] = useState<DocumentSaveState>("saved");
+  const [revisionEditor, setRevisionEditor] = useState<Editor | null>(null);
   const [reviewHandoffState, setReviewHandoffState] =
     useState<ReviewHandoffState>("idle");
   const [reviewWatcherCount, setReviewWatcherCount] = useState(0);
@@ -1405,7 +1408,7 @@ export function DocumentWorkspace({
       className={cn(
         "min-h-0 flex-1 overflow-y-auto px-8 pb-8 sm:px-12",
         embedded && "max-[640px]:mb-14",
-        hasTopNotice ? "pt-40 sm:pt-28" : "pt-10",
+        hasTopNotice ? "pt-40 sm:pt-28" : embedded ? "pt-10" : "pt-16 sm:pt-10",
       )}
     >
       <RemoteSessionBanner backend={backend} />
@@ -2001,6 +2004,20 @@ export function DocumentWorkspace({
             </div>
           </div>
         ) : null}
+        {documentPageForEditor &&
+        documentCopyPath &&
+        backend?.info.kind === "local-files" &&
+        backend.info.capabilities?.reviewRevisions === true ? (
+          <RevisionReview
+            key={documentCopyPath}
+            documentPath={documentCopyPath}
+            markdown={documentPageForEditor.content}
+            refreshKey={`${documentPage?.version ?? documentPage?.content ?? ""}:${documentDiskChangeState}`}
+            editor={
+              documentEditorViewMode === "rich-text" ? revisionEditor : null
+            }
+          />
+        ) : null}
         {documentPageForEditor ? (
           backend ? (
             <PageCard
@@ -2013,6 +2030,7 @@ export function DocumentWorkspace({
               editorViewMode={documentEditorViewMode}
               interactionMode={documentInteractionMode}
               backend={backend}
+              onEditorReady={setRevisionEditor}
               onCommentRailPresenceChange={setDocumentHasComments}
               onDirtyStateChange={handleDocumentDirtyStateChange}
               onLocalContentChange={handleDocumentLocalContentChange}

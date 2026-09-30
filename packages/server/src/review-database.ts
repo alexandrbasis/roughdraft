@@ -51,6 +51,15 @@ export interface ReviewRound {
   eventSequence?: number;
   status: "pending" | "completed";
 }
+export interface DocumentRevision {
+  id: string;
+  number: number;
+  content: string;
+  version: string;
+  source: "baseline" | "external" | "review";
+  createdAt: string;
+}
+
 interface PendingWrite {
   id: string;
   documentPath: string;
@@ -102,6 +111,7 @@ export class ReviewDatabase {
         CREATE INDEX IF NOT EXISTS events_document ON events(document_path, sequence);
         CREATE TABLE IF NOT EXISTS acknowledgements (sequence INTEGER NOT NULL REFERENCES events(sequence), consumer_id TEXT NOT NULL, status TEXT NOT NULL CHECK(status IN ('received','processed')), updated_at TEXT NOT NULL, PRIMARY KEY(sequence, consumer_id));
         CREATE TABLE IF NOT EXISTS snapshots (id TEXT PRIMARY KEY, document_path TEXT NOT NULL, version TEXT NOT NULL, content TEXT NOT NULL, created_at TEXT NOT NULL, reason TEXT NOT NULL, UNIQUE(document_path, version));
+        CREATE TABLE IF NOT EXISTS document_revisions (id TEXT PRIMARY KEY, document_path TEXT NOT NULL, number INTEGER NOT NULL, content TEXT NOT NULL, version TEXT NOT NULL, source TEXT NOT NULL CHECK(source IN ('baseline','external','review')), created_at TEXT NOT NULL, UNIQUE(document_path, number));
         CREATE TABLE IF NOT EXISTS file_writes (id TEXT PRIMARY KEY, document_path TEXT NOT NULL, status TEXT NOT NULL, payload TEXT NOT NULL);
         CREATE TABLE IF NOT EXISTS drafts (document_path TEXT NOT NULL, tab_id TEXT NOT NULL, revision TEXT NOT NULL, updated_at REAL NOT NULL, deleted INTEGER NOT NULL DEFAULT 0, payload TEXT NOT NULL, PRIMARY KEY(document_path, tab_id));
         PRAGMA user_version=1;
@@ -223,10 +233,11 @@ export class ReviewDatabase {
     this.transaction(() => {
       this.upsertRecord(record);
       if (opening) {
+        const content = fs.readFileSync(record.documentPath, "utf8");
+        this.recordRevision(record.documentPath, content, "external");
         // Multiple agents opening a still-pending document join the same round.
         const pending = this.currentRound(record.documentPath);
         if (!pending || pending.status === "completed") {
-          const content = fs.readFileSync(record.documentPath, "utf8");
           this.snapshot(record.documentPath, content, "opened");
           this.insertRound({
             id: randomUUID(),
@@ -427,6 +438,7 @@ export class ReviewDatabase {
         }
         write.roundId = round.id;
       }
+      this.recordRevision(documentPath, before, "external");
       this.snapshot(documentPath, before, "before-save");
       this.snapshot(documentPath, content, "proposed-save");
       this.db
@@ -447,6 +459,19 @@ export class ReviewDatabase {
       .run(id);
   }
   private finishWriteInternal(id: string): void {
+    const row = this.db
+      .prepare(
+        "SELECT payload FROM file_writes WHERE id=? AND status='pending'",
+      )
+      .get(id);
+    if (!row) return;
+    const write = decode<PendingWrite>(row);
+    // Only confirmed bytes become revisions. Recovery uses this same path.
+    if (fs.readFileSync(write.documentPath, "utf8") !== write.after)
+      throw new ReviewDatabaseError(
+        "The file changed before the save was recorded.",
+      );
+    this.recordRevision(write.documentPath, write.after, "review");
     this.db
       .prepare(
         "UPDATE file_writes SET status='applied' WHERE id=? AND status='pending'",
@@ -506,6 +531,59 @@ export class ReviewDatabase {
         matched: current === write.after,
       });
     }
+  }
+
+  /** Observe real local bytes; proposals and drafts never enter this ledger. */
+  observeRevision(documentPath: string, content: string): DocumentRevision {
+    return this.transaction(() =>
+      this.recordRevision(canonical(documentPath), content, "external"),
+    );
+  }
+
+  private recordRevision(
+    documentPath: string,
+    content: string,
+    source: "external" | "review",
+  ): DocumentRevision {
+    const latest = this.db
+      .prepare(
+        "SELECT id,number,content,version,source,created_at AS createdAt FROM document_revisions WHERE document_path=? ORDER BY number DESC LIMIT 1",
+      )
+      .get(documentPath) as unknown as DocumentRevision | undefined;
+    if (latest?.content === content) return latest;
+    const revision: DocumentRevision = {
+      id: randomUUID(),
+      number: latest ? latest.number + 1 : 0,
+      content,
+      version: hash(content),
+      source: latest ? source : "baseline",
+      createdAt: new Date().toISOString(),
+    };
+    this.db
+      .prepare("INSERT INTO document_revisions VALUES(?,?,?,?,?,?,?)")
+      .run(
+        revision.id,
+        documentPath,
+        revision.number,
+        content,
+        revision.version,
+        revision.source,
+        revision.createdAt,
+      );
+    this.log("revision-recorded", {
+      number: revision.number,
+      version: revision.version,
+      source: revision.source,
+    });
+    return revision;
+  }
+
+  revisions(documentPath: string): DocumentRevision[] {
+    return this.db
+      .prepare(
+        "SELECT id,number,content,version,source,created_at AS createdAt FROM document_revisions WHERE document_path=? ORDER BY number",
+      )
+      .all(canonical(documentPath)) as unknown as DocumentRevision[];
   }
 
   history(documentPath: string) {

@@ -1,0 +1,161 @@
+/* Revision identity is independent of comment and suggestion status colors. */
+.revision-color-0 {
+  --revision-ink: #2455a4;
+  --revision-fill: #e8f0ff;
+  --revision-line: #4a75ba;
+}
+.revision-color-1 {
+  --revision-ink: #7041a0;
+  --revision-fill: #f2eafd;
+  --revision-line: #9064bb;
+}
+.revision-color-2 {
+  --revision-ink: #086879;
+  --revision-fill: #def4f8;
+  --revision-line: #348398;
+}
+.revision-color-3 {
+  --revision-ink: #913f88;
+  --revision-fill: #f9e9f7;
+  --revision-line: #ad60a5;
+}
+.revision-color-4 {
+  --revision-ink: #484fa6;
+  --revision-fill: #ededff;
+  --revision-line: #747aca;
+}
+.revision-color-5 {
+  --revision-ink: #475d75;
+  --revision-fill: #e8eff5;
+  --revision-line: #7088a1;
+}
+
+.dark .revision-color-0 {
+  --revision-ink: #bed5ff;
+  --revision-fill: #24354e;
+  --revision-line: #81a8e8;
+}
+.dark .revision-color-1 {
+  --revision-ink: #dec7fa;
+  --revision-fill: #3c2c50;
+  --revision-line: #b18bd9;
+}
+.dark .revision-color-2 {
+  --revision-ink: #a8e1eb;
+  --revision-fill: #183d45;
+  --revision-line: #65aebb;
+}
+.dark .revision-color-3 {
+  --revision-ink: #edc4e9;
+  --revision-fill: #472c44;
+  --revision-line: #c68ebf;
+}
+.dark .revision-color-4 {
+  --revision-ink: #cbceff;
+  --revision-fill: #303354;
+  --revision-line: #929adf;
+}
+.dark .revision-color-5 {
+  --revision-ink: #c9dae9;
+  --revision-fill: #2c3949;
+  --revision-line: #97adbf;
+}
+
+.tiptap .revision-highlight {
+  box-shadow: inset 0 -2px var(--revision-line);
+  box-decoration-break: clone;
+  -webkit-box-decoration-break: clone;
+  cursor: pointer;
+}
+.tiptap .revision-highlight:not(.revision-highlight-review-overlap) {
+  background-color: var(--revision-fill);
+}
+
+/* Preserve the live comment/suggestion background, regardless of nesting order. */
+.tiptap .revision-highlight-review-overlap {
+  cursor: inherit;
+}
+.tiptap .revision-change-active {
+  outline: 1px solid var(--revision-line);
+  outline-offset: 2px;
+}
+.revision-change-marker,
+.revision-label {
+  display: inline-flex;
+  align-items: center;
+  gap: 0.25rem;
+  border: 1px solid var(--revision-line);
+  border-radius: 4px;
+  background: var(--revision-fill);
+  color: var(--revision-ink);
+  font-family: var(--font-sans);
+  font-size: 11px;
+  font-weight: 600;
+  line-height: 1.6;
+  padding: 1px 5px;
+  white-space: nowrap;
+}
+.revision-change-marker {
+  cursor: pointer;
+  vertical-align: baseline;
+  margin-inline: 3px;
+  min-height: 24px;
+  user-select: none;
+}
+.revision-change-marker:focus-visible {
+  outline: 2px solid var(--revision-line);
+  outline-offset: 2px;
+}
+.revision-gutter-anchor {
+  position: relative;
+  display: inline-block;
+  width: 0;
+  height: 0;
+  vertical-align: baseline;
+  user-select: none;
+}
+.revision-gutter-marker {
+  position: absolute;
+  inset-inline-end: calc(100% + 8px);
+  bottom: -5px;
+  margin: 0;
+  font-size: 10px;
+  padding-inline: 3px;
+}
+/* Tight cells and list bullets leave no safe outside gutter. */
+.tiptap :is(li, td, th, pre) .revision-gutter-anchor {
+  width: auto;
+  height: auto;
+  margin-inline-end: 5px;
+}
+.tiptap :is(li, td, th, pre) .revision-gutter-marker {
+  position: static;
+}
+@media (max-width: 640px) {
+  .revision-gutter-marker {
+    inset-inline-end: calc(100% + 3px);
+    font-size: 9px;
+    padding-inline: 2px;
+  }
+}
+.revision-swatch {
+  display: inline-block;
+  width: 10px;
+  height: 10px;
+  flex-shrink: 0;
+  border: 1px solid var(--revision-line);
+  border-radius: 50%;
+  background: var(--revision-fill);
+}
+.revision-comparison-text {
+  white-space: pre-wrap;
+  overflow-wrap: anywhere;
+  border: 1px solid var(--border);
+  border-radius: 6px;
+  background: var(--muted);
+  padding: 12px;
+  font: inherit;
+  font-size: 14px;
+  line-height: 1.6;
+  min-height: 5rem;
+}
