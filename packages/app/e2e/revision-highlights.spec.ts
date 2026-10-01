@@ -101,6 +101,114 @@ test.describe("document revision highlights", () => {
     removeMarkdownProject(directory);
   });
 
+  for (const mode of ["suggesting", "editing"] as const) {
+    test(`${mode} lets clicks edit colored revision text without opening comparison @smoke`, async ({
+      page,
+      request,
+    }) => {
+      const baseline = "# Editable revision\n\nThe old wording stays here.\n";
+      const changed = "# Editable revision\n\nThe new wording stays here.\n";
+      const documentPath = writeProjectFile(directory, "review.md", baseline);
+      await register(request, documentPath);
+      await changeOnDisk(request, directory, changed);
+      await openMarkdownFile(page, documentPath);
+      if (mode === "editing") {
+        await page.getByTestId("document-mode-trigger").click();
+        await page.getByTestId("document-mode-editing").click();
+      }
+
+      const highlight = page
+        .getByTestId("revision-highlight")
+        .filter({ hasText: "new" });
+      await expect(highlight).toBeVisible();
+      await highlight.click();
+      logE2eEvent("revision-highlights.colored-text-click", {
+        mode,
+        comparisonCount: await page.getByTestId("revision-dialog").count(),
+        caretInHighlight: await highlight.evaluate((element) =>
+          element.contains(window.getSelection()?.anchorNode ?? null),
+        ),
+      });
+      await expect(page.getByTestId("revision-dialog")).toHaveCount(0);
+      await expect(richTextEditor(page)).toBeFocused();
+      expect(
+        await highlight.evaluate((element) => {
+          const selection = window.getSelection();
+          return (
+            selection?.isCollapsed && element.contains(selection.anchorNode)
+          );
+        }),
+      ).toBe(true);
+
+      await page.keyboard.insertText(" Edited.");
+      const editedText = await richTextEditor(page).textContent();
+      expect(editedText).toContain("Edited.");
+      await expect
+        .poll(() => readProjectFile(directory, "review.md"))
+        .toContain("Edited.");
+      await page.reload();
+      await expect(richTextEditor(page)).toHaveText(editedText ?? "");
+      logE2eEvent("revision-highlights.colored-text-edit-saved", {
+        mode,
+        editedFileReloaded: true,
+      });
+    });
+  }
+
+  test("colors the complete selected history version against its predecessor @smoke", async ({
+    page,
+    request,
+  }) => {
+    const baseline = "Title\n\nA red cat.\n\nplain\n\nRemoved paragraph.\n";
+    const changed = "# Title\n\nA green cat.\n\n**plain**\n";
+    const current = "# Title\n\nA blue cat.\n\n**plain**\n";
+    const documentPath = writeProjectFile(directory, "review.md", baseline);
+    await register(request, documentPath);
+    await changeOnDisk(request, directory, changed);
+    await changeOnDisk(request, directory, current);
+    await openMarkdownFile(page, documentPath);
+    await page.getByTestId("revision-history").click();
+    await page.getByTestId("revision-history-2").click();
+    const preview = page.getByTestId("revision-history-preview");
+    await expect(
+      preview.getByTestId("revision-highlight").filter({ hasText: "green" }),
+    ).toBeVisible();
+    await expect(
+      preview.getByTestId("revision-highlight").filter({ hasText: "plain" }),
+    ).toBeVisible();
+    await expect(
+      preview.getByTestId("revision-structure-change"),
+    ).toContainText("Paragraph → Heading 1");
+    await expect(
+      preview.getByTestId("revision-deletion").filter({ hasText: "red" }),
+    ).toBeVisible();
+    await expect(
+      preview
+        .getByTestId("revision-deletion")
+        .filter({ hasText: "Removed paragraph." }),
+    ).toBeVisible();
+    const colored = preview.locator("[data-revision-number]"); // selector-check-ignore: all colored decorations must identify the selected version, including structure labels.
+    for (const item of await colored.all()) {
+      await expect(item).toHaveAttribute("data-revision-number", "2");
+      await expect(item).toHaveClass(/revision-color-1/);
+    }
+    await expect(preview.locator(".ProseMirror")).toHaveAttribute(
+      "contenteditable",
+      "false",
+    );
+    expect(readProjectFile(directory, "review.md")).toBe(current);
+    logE2eEvent("revision.history-complete-comparison", {
+      selectedRevision: 2,
+      predecessor: 1,
+      latestRevision: 3,
+      coloredElements: await colored.count(),
+      unchangedFile: true,
+    });
+    await page.getByTestId("revision-history-1").click();
+    await expect(preview.getByTestId("revision-highlight")).toHaveCount(0);
+    await expect(preview.getByTestId("revision-deletion")).toHaveCount(0);
+  });
+
   test("keeps narrow document controls clear of the fixed Approve button", async ({
     page,
     request,
@@ -333,15 +441,19 @@ test.describe("document revision highlights", () => {
       page.getByTestId("revision-change-marker").filter({ hasText: "Deleted" }),
     ).toHaveCount(0);
 
-    for (const key of ["Enter", "Space"]) {
-      await words.focus();
-      await words.press(key);
-      await expect(page.getByTestId("revision-dialog")).toBeVisible();
-      await expect(page.getByTestId("revision-before")).toContainText(
-        "fragile wording",
-      );
-      await page.getByTestId("revision-dialog-close").click();
-    }
+    // Removed text is a passive ghost: the physical click passes to the editor.
+    await words.click({ force: true });
+    await expect(page.getByTestId("revision-dialog")).toHaveCount(0);
+    await expect(words).not.toHaveAttribute("role", "button");
+    await expect(words).not.toHaveAttribute("tabindex", "0");
+    await chooseRevision(page, 2);
+    await page.getByTestId("revision-next").click();
+    await page.getByTestId("revision-details").click();
+    await expect(page.getByTestId("revision-dialog")).toBeVisible();
+    await expect(page.getByTestId("revision-before")).toContainText(
+      "fragile wording",
+    );
+    await page.getByTestId("revision-dialog-close").click();
     await chooseRevision(page, 2);
     await expect(deleted).toHaveCount(1);
     await expect(words).toBeVisible();
@@ -460,10 +572,20 @@ test.describe("document revision highlights", () => {
       .getByTestId("revision-highlight")
       .filter({ hasText: "wording" })
       .click();
-    await expect(page.getByTestId("comment-thread-c1")).toBeVisible();
+    // The same comment can appear in the side rail or the responsive dock.
+    const comment = page
+      .getByTestId(/^comment-(rail|banner)-c1$/)
+      .filter({ visible: true });
+    await expect(comment).toBeVisible();
+    await expect(comment).toContainText("Please clarify this.");
     await expect(page.getByTestId("revision-dialog")).toHaveCount(0);
 
-    await page.getByTestId("revision-deletion").click();
+    // Removed text is a passive ghost: the physical click passes to the editor.
+    await page.getByTestId("revision-deletion").click({ force: true });
+    await expect(page.getByTestId("revision-dialog")).toHaveCount(0);
+    await chooseRevision(page, 3);
+    await page.getByTestId("revision-next").click();
+    await page.getByTestId("revision-details").click();
     await expect(page.getByTestId("revision-dialog")).toBeVisible();
     await expect(page.getByTestId("revision-before")).toContainText(
       "obsolete clause",
@@ -478,14 +600,16 @@ test.describe("document revision highlights", () => {
         "../../../.context/ui-state-screenshots",
       );
       fs.mkdirSync(screenshotDirectory, { recursive: true });
+      await page.getByTestId("revision-dialog-close").click();
       for (const theme of ["light", "dark"] as const) {
-        await page.getByTestId("revision-dialog-close").click();
+        await chooseRevision(page, "all");
         await page.getByTestId("theme-menu-trigger").click();
         await page.getByTestId(`theme-option-${theme}`).click();
         for (const [viewport, width] of [
           ["desktop", 1440],
           ["narrow", 390],
         ] as const) {
+          await chooseRevision(page, "all");
           await page.setViewportSize({ width, height: 900 });
           await expect(
             page
@@ -499,7 +623,9 @@ test.describe("document revision highlights", () => {
             ),
             animations: "disabled",
           });
-          await page.getByTestId("revision-deletion").click();
+          await chooseRevision(page, 3);
+          await page.getByTestId("revision-next").click();
+          await page.getByTestId("revision-details").click();
           await expect(page.getByTestId("revision-dialog")).toBeVisible();
           await page.screenshot({
             path: path.join(
@@ -510,7 +636,6 @@ test.describe("document revision highlights", () => {
           });
           await page.getByTestId("revision-dialog-close").click();
         }
-        await page.getByTestId("revision-deletion").click();
       }
     }
     expect(readProjectFile(directory, "review.md")).toBe(latest);

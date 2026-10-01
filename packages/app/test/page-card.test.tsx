@@ -1233,6 +1233,278 @@ describe("PageCard editor integration", () => {
     );
   });
 
+  it("suggesting Enter splits formatted text at the caret and preserves typing marks", async () => {
+    const rendered = await renderPageCard({
+      page: {
+        id: "formatted-enter",
+        title: "Formatted Enter",
+        content: "**Hello world**",
+      },
+      interactionMode: "suggesting",
+    });
+    const editor = rendered.getEditor();
+    await act(async () => {
+      editor.commands.setTextSelection(6);
+    });
+    await pressEditorKey(editor, "Enter");
+    expect(editor.getJSON().content).toHaveLength(2);
+    expect(editor.state.doc.child(0).textContent).toBe("Hello");
+    expect(editor.state.doc.child(1).textContent.replaceAll("\u2060", "")).toBe(
+      " world",
+    );
+    await typeTextAsBrowserInput(editor, "Next");
+    const second = editor.state.doc.child(1);
+    expect(second.textContent).toContain("Next world");
+    second.forEach((node) => {
+      if (node.text?.includes("Next"))
+        expect(node.marks.map((mark) => mark.type.name)).toContain("bold");
+    });
+  });
+
+  it("suggesting Enter creates a formatted sibling list item", async () => {
+    const rendered = await renderPageCard({
+      page: { id: "list-enter", title: "List Enter", content: "- **First**" },
+      interactionMode: "suggesting",
+    });
+    const editor = rendered.getEditor();
+    await act(async () => {
+      editor.commands.setTextSelection(editor.state.doc.content.size - 3);
+    });
+    await pressEditorKey(editor, "Enter");
+    await typeTextAsBrowserInput(editor, "Second");
+    const list = editor.state.doc.firstChild;
+    expect(list?.type.name).toBe("bulletList");
+    expect(list?.childCount).toBe(2);
+    expect(list?.child(1).textContent).toContain("Second");
+    expect(
+      list?.child(1).firstChild?.lastChild?.marks.map((mark) => mark.type.name),
+    ).toContain("bold");
+  });
+
+  for (const scenario of [
+    {
+      name: "bold and italic",
+      content: "***First***",
+      node: "paragraph",
+      markNames: ["bold", "italic"],
+    },
+    {
+      name: "ordered list",
+      content: "1. **First**",
+      node: "orderedList",
+      markNames: ["bold"],
+    },
+    {
+      name: "checked task list",
+      content: "- [x] **First**",
+      node: "taskList",
+      markNames: ["bold"],
+    },
+    {
+      name: "heading",
+      content: "## **First**",
+      node: "heading",
+      markNames: ["bold"],
+    },
+  ]) {
+    it(`suggesting Enter preserves formatting at the end of ${scenario.name}`, async () => {
+      const rendered = await renderPageCard({
+        page: {
+          id: scenario.name,
+          title: scenario.name,
+          content: scenario.content,
+        },
+        interactionMode: "suggesting",
+      });
+      const editor = rendered.getEditor();
+      await act(async () => {
+        editor.state.doc.descendants((node, pos) => {
+          if (node.isText && node.text === "First")
+            editor.commands.setTextSelection(pos + node.nodeSize);
+        });
+      });
+      await pressEditorKey(editor, "Enter");
+      await typeTextAsBrowserInput(editor, "Second");
+      const doc = editor.state.doc;
+      const block = scenario.node.endsWith("List")
+        ? doc.firstChild?.lastChild?.firstChild
+        : doc.child(1);
+      expect(block?.type.name).toBe("paragraph");
+      expect(block?.textContent).toContain("Second");
+      expect(block?.lastChild?.marks.map((mark) => mark.type.name)).toEqual(
+        expect.arrayContaining(scenario.markNames),
+      );
+      if (scenario.node.endsWith("List"))
+        expect(doc.firstChild?.childCount).toBe(2);
+      if (scenario.node === "taskList")
+        expect(doc.firstChild?.lastChild?.attrs.checked).toBe(false);
+    });
+  }
+
+  it("suggesting Shift+Enter preserves formatting for continued typing", async () => {
+    const rendered = await renderPageCard({
+      page: {
+        id: "soft-formatted",
+        title: "Soft formatted",
+        content: "***First***",
+      },
+      interactionMode: "suggesting",
+    });
+    const editor = rendered.getEditor();
+    await act(async () => {
+      editor.commands.focus("end");
+    });
+    await pressEditorKey(editor, "Enter", { shiftKey: true });
+    await typeTextAsBrowserInput(editor, "Second");
+    expect(editor.state.doc.childCount).toBe(1);
+    expect(
+      editor.state.doc.firstChild?.lastChild?.marks.map(
+        (mark) => mark.type.name,
+      ),
+    ).toEqual(expect.arrayContaining(["bold", "italic"]));
+  });
+
+  it("suggesting Enter exits a newly created empty list item", async () => {
+    const rendered = await renderPageCard({
+      page: { id: "list-exit", title: "List exit", content: "- First" },
+      interactionMode: "suggesting",
+    });
+    const editor = rendered.getEditor();
+    await act(async () => {
+      editor.commands.setTextSelection(8);
+    });
+    await pressEditorKey(editor, "Enter");
+    await pressEditorKey(editor, "Enter");
+    expect(editor.state.doc.firstChild?.childCount).toBe(1);
+    expect(editor.state.doc.child(1).type.name).toBe("paragraph");
+  });
+
+  it("suggesting Backspace immediately undoes a formatted Enter split", async () => {
+    const rendered = await renderPageCard({
+      page: {
+        id: "join-enter",
+        title: "Join Enter",
+        content: "***Hello world***",
+      },
+      interactionMode: "suggesting",
+    });
+    const editor = rendered.getEditor();
+    await act(async () => {
+      editor.commands.setTextSelection(6);
+    });
+    await pressEditorKey(editor, "Enter");
+    await pressEditorKey(editor, "Backspace");
+    expect(editor.state.doc.childCount).toBe(1);
+    expect(editor.getText()).toBe("Hello world");
+    expect(
+      editor.state.doc.firstChild?.lastChild?.marks.map(
+        (mark) => mark.type.name,
+      ),
+    ).toEqual(expect.arrayContaining(["bold", "italic"]));
+  });
+
+  it("suggesting Backspace joins an existing paragraph without deleting original text", async () => {
+    const rendered = await renderPageCard({
+      page: {
+        id: "join-existing",
+        title: "Join existing",
+        content: "**First**\n\n_Second_",
+      },
+      interactionMode: "suggesting",
+    });
+    const editor = rendered.getEditor();
+    await act(async () => {
+      editor.commands.setTextSelection(8);
+    });
+    await pressEditorKey(editor, "Backspace");
+    expect(editor.state.doc.childCount).toBe(1);
+    expect(editor.getText()).toBe("FirstSecond");
+    expect(
+      editor.state.doc.firstChild?.firstChild?.marks.map(
+        (mark) => mark.type.name,
+      ),
+    ).toContain("bold");
+    expect(
+      editor.state.doc.firstChild?.lastChild?.marks.map(
+        (mark) => mark.type.name,
+      ),
+    ).toContain("italic");
+  });
+
+  it("suggesting Backspace joins after typed text at the start of its new paragraph", async () => {
+    const rendered = await renderPageCard({
+      page: {
+        id: "join-typed",
+        title: "Join typed",
+        content: "***Hello world***",
+      },
+      interactionMode: "suggesting",
+    });
+    const editor = rendered.getEditor();
+    await act(async () => {
+      editor.commands.setTextSelection(6);
+    });
+    await pressEditorKey(editor, "Enter");
+    await typeTextAsBrowserInput(editor, "Next");
+    await act(async () => {
+      editor.state.doc.descendants((node, pos) => {
+        if (node.isText && node.text?.includes("Next"))
+          editor.commands.setTextSelection(pos);
+      });
+    });
+    await pressEditorKey(editor, "Backspace");
+    expect(editor.state.doc.childCount).toBe(1);
+    expect(editor.getText()).toBe("HelloNext world");
+    expect(
+      editor.state.doc.firstChild?.lastChild?.marks.map(
+        (mark) => mark.type.name,
+      ),
+    ).toEqual(expect.arrayContaining(["bold", "italic"]));
+  });
+
+  for (const content of ["- **First**", "1. **First**", "- [x] **First**"]) {
+    it(`suggesting Backspace rejoins formatted list ${content}`, async () => {
+      const rendered = await renderPageCard({
+        page: { id: "join-list", title: "Join list", content },
+        interactionMode: "suggesting",
+      });
+      const editor = rendered.getEditor();
+      await act(async () => {
+        editor.state.doc.descendants((node, pos) => {
+          if (node.isText && node.text === "First")
+            editor.commands.setTextSelection(pos + node.nodeSize);
+        });
+      });
+      await pressEditorKey(editor, "Enter");
+      await typeTextAsBrowserInput(editor, "Second");
+      await act(async () => {
+        editor.state.doc.descendants((node, pos) => {
+          if (node.isText && node.text?.includes("Second"))
+            editor.commands.setTextSelection(pos + 1);
+        });
+      });
+      await pressEditorKey(editor, "Backspace");
+      expect(editor.state.doc.firstChild?.childCount).toBe(1);
+      expect(editor.state.doc.firstChild?.firstChild?.childCount).toBe(1);
+      expect(editor.state.doc.firstChild?.textContent).toBe("FirstSecond");
+      expect(
+        editor.state.doc.firstChild?.firstChild?.firstChild?.lastChild?.marks.map(
+          (mark) => mark.type.name,
+        ),
+      ).toContain("bold");
+    });
+  }
+
+  it("suggesting Enter preserves selected original text", async () => {
+    const rendered = await renderPageCard({ interactionMode: "suggesting" });
+    const editor = rendered.getEditor();
+    await act(async () => {
+      editor.commands.setTextSelection({ from: 1, to: 4 });
+    });
+    await pressEditorKey(editor, "Enter");
+    expect(editor.getText()).toBe("Start");
+  });
+
   it("suggesting mode tracks Enter at the end of a paragraph as an inserted paragraph", async () => {
     const rendered = await renderPageCard({
       page: {

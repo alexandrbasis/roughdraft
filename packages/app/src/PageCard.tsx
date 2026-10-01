@@ -389,6 +389,15 @@ function getDocumentCriticChanges(
   return [...changes.values()];
 }
 
+function getSuggestionFormattingMarks(editor: Editor): ProseMirrorMark[] {
+  return (
+    editor.state.storedMarks ?? editor.state.selection.$from.marks()
+  ).filter(
+    (mark) =>
+      mark.type.name !== "criticChange" && mark.type.name !== "commentRef",
+  );
+}
+
 function getReusableSuggestionInputMark(
   editor: Editor,
   position: number,
@@ -913,7 +922,13 @@ const RichTextEditorSurface = memo(function RichTextEditorSurface({
               }
 
               const insertPos = tr.mapping.map(to, -1);
-              tr.insert(insertPos, view.state.schema.text(text, [newMark]));
+              tr.insert(
+                insertPos,
+                view.state.schema.text(text, [
+                  ...getSuggestionFormattingMarks(currentEditor),
+                  newMark,
+                ]),
+              );
               tr.setSelection(
                 TextSelection.create(tr.doc, insertPos + text.length),
               );
@@ -933,7 +948,13 @@ const RichTextEditorSurface = memo(function RichTextEditorSurface({
                     existingChanges: getDocumentCriticChanges(currentEditor),
                   }),
                 );
-              tr.insert(insertPos, view.state.schema.text(text, [mark]));
+              tr.insert(
+                insertPos,
+                view.state.schema.text(text, [
+                  ...getSuggestionFormattingMarks(currentEditor),
+                  mark,
+                ]),
+              );
               tr.setSelection(
                 TextSelection.create(tr.doc, insertPos + text.length),
               );
@@ -950,7 +971,13 @@ const RichTextEditorSurface = memo(function RichTextEditorSurface({
                   existingChanges: getDocumentCriticChanges(currentEditor),
                 }),
               );
-            tr.insert(from, view.state.schema.text(text, [mark]));
+            tr.insert(
+              from,
+              view.state.schema.text(text, [
+                ...getSuggestionFormattingMarks(currentEditor),
+                mark,
+              ]),
+            );
             tr.setSelection(TextSelection.create(tr.doc, from + text.length));
           }
 
@@ -1025,7 +1052,13 @@ const RichTextEditorSurface = memo(function RichTextEditorSurface({
               }
 
               const insertPos = tr.mapping.map(to, -1);
-              tr.insert(insertPos, view.state.schema.text(text, [newMark]));
+              tr.insert(
+                insertPos,
+                view.state.schema.text(text, [
+                  ...getSuggestionFormattingMarks(currentEditor),
+                  newMark,
+                ]),
+              );
               tr.setSelection(
                 TextSelection.create(tr.doc, insertPos + text.length),
               );
@@ -1045,7 +1078,13 @@ const RichTextEditorSurface = memo(function RichTextEditorSurface({
                     existingChanges: getDocumentCriticChanges(currentEditor),
                   }),
                 );
-              tr.insert(insertPos, view.state.schema.text(text, [mark]));
+              tr.insert(
+                insertPos,
+                view.state.schema.text(text, [
+                  ...getSuggestionFormattingMarks(currentEditor),
+                  mark,
+                ]),
+              );
               tr.setSelection(
                 TextSelection.create(tr.doc, insertPos + text.length),
               );
@@ -1062,7 +1101,13 @@ const RichTextEditorSurface = memo(function RichTextEditorSurface({
                   existingChanges: getDocumentCriticChanges(currentEditor),
                 }),
               );
-            tr.insert(from, view.state.schema.text(text, [mark]));
+            tr.insert(
+              from,
+              view.state.schema.text(text, [
+                ...getSuggestionFormattingMarks(currentEditor),
+                mark,
+              ]),
+            );
             tr.setSelection(TextSelection.create(tr.doc, from + text.length));
           }
 
@@ -1086,9 +1131,13 @@ const RichTextEditorSurface = memo(function RichTextEditorSurface({
                 }),
               );
             const tr = view.state.tr.replaceSelectionWith(
-              schema.nodes.hardBreak.create(null, null, [mark]),
+              schema.nodes.hardBreak.create(null, null, [
+                ...getSuggestionFormattingMarks(currentEditor),
+                mark,
+              ]),
               false,
             );
+            tr.ensureMarks(getSuggestionFormattingMarks(currentEditor));
             view.dispatch(tr.scrollIntoView());
             return true;
           }
@@ -1102,29 +1151,66 @@ const RichTextEditorSurface = memo(function RichTextEditorSurface({
             const { selection } = view.state;
             if (!selection.empty) return true;
 
-            const $from = selection.$from;
-            if (!$from.parent.isTextblock) return true;
-            if ($from.parentOffset !== $from.parent.content.size) return true;
-
+            if (!selection.$from.parent.isTextblock) return true;
+            const formattingMarks = getSuggestionFormattingMarks(currentEditor);
             const change = createCriticChange("addition", undefined, {
               existingChanges: getDocumentCriticChanges(currentEditor),
             });
             const mark = view.state.schema.marks.criticChange.create(change);
-            const tr = view.state.tr.split(selection.from);
-            const insertPos = tr.selection.from;
 
-            tr.insert(
-              insertPos,
-              view.state.schema.text(SUGGESTED_PARAGRAPH_SENTINEL, [mark]),
-            );
-            tr.setSelection(
-              TextSelection.create(
-                tr.doc,
-                insertPos + SUGGESTED_PARAGRAPH_SENTINEL.length,
-              ),
-            );
-            tr.scrollIntoView();
-            view.dispatch(tr);
+            // Code uses a literal newline; other blocks use the editor's native
+            // split/lift commands so lists, task items, and headings keep their semantics.
+            if (selection.$from.parent.type.spec.code) {
+              const tr = view.state.tr.insertText("\n", selection.from);
+              tr.addMark(selection.from, selection.from + 1, mark);
+              tr.ensureMarks(formattingMarks);
+              view.dispatch(tr.scrollIntoView());
+              return true;
+            }
+
+            currentEditor
+              .chain()
+              .command(({ tr }) => {
+                const $caret = tr.selection.$from;
+                if (
+                  $caret.parent.textContent === SUGGESTED_PARAGRAPH_SENTINEL
+                ) {
+                  // A new suggested paragraph is visually empty. Removing its
+                  // own marker lets native Enter exit empty list items normally.
+                  tr.delete($caret.start(), $caret.end());
+                }
+                return true;
+              })
+              .first(({ commands }) => [
+                () => commands.splitListItem("taskItem", { checked: false }),
+                () => commands.splitListItem("listItem"),
+                () => commands.liftListItem("taskItem"),
+                () => commands.liftListItem("listItem"),
+                () => commands.createParagraphNear(),
+                () => commands.liftEmptyBlock(),
+                () => commands.splitBlock(),
+              ])
+              .command(({ tr }) => {
+                if (!tr.docChanged) return false;
+                const insertPos = tr.selection.from;
+                tr.insert(
+                  insertPos,
+                  view.state.schema.text(SUGGESTED_PARAGRAPH_SENTINEL, [
+                    ...formattingMarks,
+                    mark,
+                  ]),
+                );
+                tr.setSelection(
+                  TextSelection.create(
+                    tr.doc,
+                    insertPos + SUGGESTED_PARAGRAPH_SENTINEL.length,
+                  ),
+                );
+                tr.ensureMarks(formattingMarks);
+                return true;
+              })
+              .scrollIntoView()
+              .run();
             return true;
           }
 
@@ -1204,6 +1290,69 @@ const RichTextEditorSurface = memo(function RichTextEditorSurface({
           if (!currentEditor) return false;
 
           const { selection } = view.state;
+          if (
+            event.key === "Backspace" &&
+            selection.empty &&
+            !event.ctrlKey &&
+            !event.altKey &&
+            !event.metaKey
+          ) {
+            const $caret = selection.$from;
+            const prefix = $caret.parent.textBetween(0, $caret.parentOffset);
+            const firstNode = $caret.parent.firstChild;
+            const hasParagraphMarker =
+              firstNode?.isText &&
+              firstNode.text?.startsWith(SUGGESTED_PARAGRAPH_SENTINEL) &&
+              firstNode.marks.some(
+                (mark) =>
+                  mark.type.name === "criticChange" &&
+                  mark.attrs.kind === "addition",
+              );
+            if (
+              prefix === "" ||
+              (hasParagraphMarker && prefix === SUGGESTED_PARAGRAPH_SENTINEL)
+            ) {
+              event.preventDefault();
+              const formattingMarks =
+                getSuggestionFormattingMarks(currentEditor);
+              currentEditor
+                .chain()
+                .command(({ tr }) => {
+                  if (hasParagraphMarker) {
+                    tr.delete(
+                      $caret.start(),
+                      $caret.start() + SUGGESTED_PARAGRAPH_SENTINEL.length,
+                    );
+                  }
+                  return true;
+                })
+                .joinBackward()
+                .command(({ tr, commands }) => {
+                  const $joined = tr.selection.$from;
+                  const container = $joined.depth > 0 ? $joined.node(-1) : null;
+                  if (
+                    $joined.depth > 0 &&
+                    $joined.parentOffset === 0 &&
+                    $joined.index(-1) > 0 &&
+                    (container?.type.name === "listItem" ||
+                      container?.type.name === "taskItem")
+                  ) {
+                    // Joining item wrappers can leave adjacent paragraphs.
+                    // Complete the line join in the same Backspace transaction.
+                    return commands.joinBackward();
+                  }
+                  return true;
+                })
+                .command(({ tr }) => {
+                  tr.ensureMarks(formattingMarks);
+                  return true;
+                })
+                .scrollIntoView()
+                .run();
+              return true;
+            }
+          }
+
           let from = selection.from;
           let to = selection.to;
 

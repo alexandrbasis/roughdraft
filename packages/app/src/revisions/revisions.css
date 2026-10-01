@@ -104,7 +104,7 @@
 .tiptap .revision-highlight {
   box-decoration-break: clone;
   -webkit-box-decoration-break: clone;
-  cursor: pointer;
+  cursor: inherit;
 }
 .tiptap .revision-highlight:not(.revision-highlight-review-overlap) {
   background-color: var(--revision-fill);
@@ -124,16 +124,13 @@
   -webkit-box-decoration-break: clone;
   white-space: pre-wrap;
   overflow-wrap: anywhere;
-  cursor: pointer;
+  cursor: inherit;
+  pointer-events: none;
   user-select: none;
 }
 .tiptap .revision-deletion del {
   text-decoration: line-through;
   text-decoration-color: var(--revision-line);
-}
-.tiptap .revision-deletion:focus-visible {
-  outline: 2px solid var(--revision-line);
-  outline-offset: 2px;
 }
 .tiptap .revision-change-active {
   outline: 1px solid var(--revision-line);
@@ -153,6 +150,20 @@
   line-height: 1.6;
   padding: 1px 5px;
   white-space: nowrap;
+}
+.revision-structure-label {
+  display: inline-block;
+  margin-inline: 0.2rem;
+  padding: 1px 5px;
+  border: 1px solid var(--revision-line);
+  border-radius: 4px;
+  background: var(--revision-fill);
+  color: var(--revision-ink);
+  font-family: var(--font-sans);
+  font-size: 11px;
+  font-weight: 500;
+  line-height: 1.6;
+  vertical-align: middle;
 }
 .revision-legend {
   display: flex;

@@ -56,7 +56,15 @@ interface RevisionReviewProps {
   restoreDisabledReason?: string;
 }
 
-function ReadOnlyVersionPreview({ content }: { content: string }) {
+function ReadOnlyVersionPreview({
+  content,
+  revision,
+  previousRevision,
+}: {
+  content: string;
+  revision?: DocumentRevision;
+  previousRevision?: DocumentRevision;
+}) {
   const previewEditor = useEditor(
     {
       extensions: createEditorExtensions(""),
@@ -70,6 +78,28 @@ function ReadOnlyVersionPreview({ content }: { content: string }) {
     },
     [content],
   );
+  useEffect(() => {
+    if (!previewEditor || previewEditor.isDestroyed) return;
+    previewEditor.registerPlugin(createRevisionPlugin());
+    updateRevisionDecorations(previewEditor, {
+      changes:
+        revision && previousRevision
+          ? buildRevisionChanges(
+              [previousRevision, revision],
+              previewEditor.state.doc,
+              previewEditor.schema,
+            )
+          : [],
+      selectedRevisions: revision ? [revision.number] : [],
+      activeChangeId: null,
+      visible: true,
+      completeComparison: true,
+    });
+    return () => {
+      if (!previewEditor.isDestroyed)
+        previewEditor.unregisterPlugin(revisionPluginKey);
+    };
+  }, [previewEditor, revision, previousRevision]);
   return (
     <div
       data-testid="revision-history-preview"
@@ -219,7 +249,7 @@ export function RevisionReview({
 
   useEffect(() => {
     if (!editor || editor.isDestroyed) return;
-    editor.registerPlugin(createRevisionPlugin(selectChange));
+    editor.registerPlugin(createRevisionPlugin());
     let timer: ReturnType<typeof setTimeout> | undefined;
     const onTransaction = ({
       transaction,
@@ -236,7 +266,7 @@ export function RevisionReview({
       editor.off("transaction", onTransaction);
       if (!editor.isDestroyed) editor.unregisterPlugin(revisionPluginKey);
     };
-  }, [editor, selectChange]);
+  }, [editor]);
 
   const comparison = useMemo(() => {
     // documentTick changes only after content transactions, never decoration updates.
@@ -894,6 +924,14 @@ export function RevisionReview({
                   <ReadOnlyVersionPreview
                     key={historySelected.id}
                     content={historySelected.content}
+                    revision={
+                      historyTab === "versions" ? selectedVersion : undefined
+                    }
+                    previousRevision={
+                      historyTab === "versions" && selectedVersion
+                        ? revisions[revisions.indexOf(selectedVersion) - 1]
+                        : undefined
+                    }
                   />
                 )
               ) : (

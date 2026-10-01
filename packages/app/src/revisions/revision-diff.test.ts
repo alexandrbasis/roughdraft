@@ -253,7 +253,7 @@ it("renders colored changes without version labels or document mutations", () =>
     extensions: createEditorExtensions(""),
     content: criticMarkdownToEditorState("Hello brave world").doc,
   });
-  editor.registerPlugin(createRevisionPlugin(() => {}));
+  editor.registerPlugin(createRevisionPlugin());
   const before = editor.getJSON();
   const result = changes("Hello world", "Hello brave world");
   updateRevisionDecorations(editor, {
@@ -290,10 +290,9 @@ it("shows deleted text inline as a colored strike-through without editing the do
     extensions: createEditorExtensions(""),
     content: criticMarkdownToEditorState("Hello world").doc,
   });
-  const onSelect = vi.fn();
   const onUpdate = vi.fn();
   editor.on("update", onUpdate);
-  editor.registerPlugin(createRevisionPlugin(onSelect));
+  editor.registerPlugin(createRevisionPlugin());
   const before = editor.getJSON();
   const result = changes("Hello brave world", "Hello world");
   const settings = {
@@ -314,7 +313,9 @@ it("shows deleted text inline as a colored strike-through without editing the do
   expect(deletion?.classList.contains("revision-color-0")).toBe(true);
   expect(deletion?.dataset.revisionChangeId).toBe(result[0].id);
   deletion?.click();
-  expect(onSelect).toHaveBeenCalledWith(result[0].id);
+  expect(deletion?.hasAttribute("role")).toBe(false);
+  expect(deletion?.hasAttribute("tabindex")).toBe(false);
+  expect(editor.getJSON()).toEqual(before);
 
   updateRevisionDecorations(editor, { ...settings, selectedRevisions: [2] });
   expect(
@@ -336,7 +337,7 @@ it("keeps multiple revision colors without adding labels to the paragraph", () =
     extensions: createEditorExtensions(""),
     content: criticMarkdownToEditorState(text).doc,
   });
-  editor.registerPlugin(createRevisionPlugin(() => {}));
+  editor.registerPlugin(createRevisionPlugin());
   const result = changes("A cat.", "A big cat sleeps.", text);
   updateRevisionDecorations(editor, {
     changes: result,
@@ -370,7 +371,7 @@ it("does not append a paragraph or emit content updates when decorating a docume
   });
   const onUpdate = vi.fn();
   editor.on("update", onUpdate);
-  editor.registerPlugin(createRevisionPlugin(() => {}));
+  editor.registerPlugin(createRevisionPlugin());
   const before = editor.getJSON();
   updateRevisionDecorations(editor, {
     changes: [],
