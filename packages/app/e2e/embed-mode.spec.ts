@@ -41,17 +41,51 @@ test.describe("embedded review", () => {
       params.set("embed", "1");
       await page.goto(`/?${params}`);
       await expect(card).toBeVisible();
+      const tools = page.getByTestId("document-floating-tools");
+      const outline = page.getByTestId("document-outline-sidebar");
+      const workspace = page.getByTestId("document-workspace");
+      await expect(tools).toBeVisible();
+      await expect(outline).toBeVisible();
+      await expect(workspace).toBeVisible();
       for (const mode of ["rich-text", "code"]) {
         const bounds = await card.boundingBox();
-        expect(bounds?.x).toBe(0);
-        expect(bounds?.width).toBeGreaterThanOrEqual(width - 20);
+        const toolsBounds = await tools.boundingBox();
+        const outlineBounds = await outline.boundingBox();
+        const workspaceBounds = await workspace.boundingBox();
+        if (!bounds || !toolsBounds || !outlineBounds || !workspaceBounds)
+          throw new Error("Embedded document columns lack visible bounds");
+        expect(toolsBounds.x + toolsBounds.width).toBeLessThanOrEqual(
+          outlineBounds.x + 1,
+        );
+        expect(outlineBounds.x + outlineBounds.width).toBeLessThanOrEqual(
+          workspaceBounds.x + 1,
+        );
+        expect(bounds.x).toBeGreaterThanOrEqual(workspaceBounds.x);
+        expect(bounds.x + bounds.width).toBeLessThanOrEqual(
+          workspaceBounds.x + workspaceBounds.width,
+        );
+        const leftInset = bounds.x - workspaceBounds.x;
+        const rightInset =
+          workspaceBounds.x + workspaceBounds.width - bounds.x - bounds.width;
+        expect(leftInset).toBeLessThanOrEqual(32);
+        expect(rightInset).toBeLessThanOrEqual(32);
+        expect(Math.abs(leftInset - rightInset)).toBeLessThanOrEqual(1);
         await expect(card).toHaveCSS("box-shadow", "none");
         await expect(card).toHaveCSS("border-radius", "0px");
         await expect(
           page.getByTestId("document-file-menu-trigger"),
         ).toBeVisible();
         await expect(page.getByTestId("document-mode-trigger")).toBeVisible();
-        logE2eEvent("embed.layout", { width, mode, bounds });
+        logE2eEvent("embed.layout", {
+          width,
+          mode,
+          bounds,
+          toolsBounds,
+          outlineBounds,
+          workspaceBounds,
+          leftInset,
+          rightInset,
+        });
         await page.screenshot({
           path: testInfo.outputPath(`embed-${width}-${mode}.png`),
         });

@@ -34,7 +34,7 @@ test.describe("Review accessibility", () => {
   test("expands a collapsed comment thread from the keyboard", async ({
     page,
   }, testInfo) => {
-    await page.setViewportSize({ width: 1280, height: 900 });
+    await page.setViewportSize({ width: 1600, height: 900 });
     const filePath = writeProjectFile(
       projectDir,
       "keyboard-thread.md",
@@ -44,7 +44,7 @@ test.describe("Review accessibility", () => {
     await openMarkdownFile(page, filePath);
     await expect(page.getByTestId("comment-thread-c1")).toBeVisible();
     await page.screenshot({
-      path: testInfo.outputPath("before-keyboard-thread-1280-light.png"),
+      path: testInfo.outputPath("before-keyboard-thread-1600-light.png"),
       fullPage: true,
     });
 
@@ -64,14 +64,14 @@ test.describe("Review accessibility", () => {
     await expect(thread).toBeFocused();
 
     logE2eEvent("review-accessibility.keyboard-expand", {
-      viewport: 1280,
+      viewport: 1600,
     });
   });
 
   test("returns focus to Reply after cancelling a keyboard-created reply", async ({
     page,
   }) => {
-    await page.setViewportSize({ width: 1280, height: 900 });
+    await page.setViewportSize({ width: 1600, height: 900 });
     const filePath = writeProjectFile(
       projectDir,
       "reply-focus.md",
@@ -98,7 +98,7 @@ test.describe("Review accessibility", () => {
   test("resolves a suggestion from the keyboard and keeps focus in the document", async ({
     page,
   }) => {
-    await page.setViewportSize({ width: 1280, height: 900 });
+    await page.setViewportSize({ width: 1600, height: 900 });
     const filePath = writeProjectFile(
       projectDir,
       "resolve-suggestion.md",
