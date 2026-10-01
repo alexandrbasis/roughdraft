@@ -122,6 +122,9 @@ export class ApiBackend implements StorageBackend {
           projectPath: this.info.projectPath,
           path: relativePath,
           ...(overallComment ? { overallComment } : {}),
+          ...(options.expectedVersion
+            ? { expectedVersion: options.expectedVersion }
+            : {}),
         }),
       },
     );

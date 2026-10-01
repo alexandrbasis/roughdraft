@@ -11,20 +11,20 @@ import {
 import type TurndownService from "turndown";
 import { parse as parseYaml, stringify as stringifyYaml } from "yaml";
 import {
-  createEditorExtensions,
   type CriticChangeAttrs,
   type CriticChangeKind,
+  createEditorExtensions,
 } from "../editor-extensions";
 import {
+  appendYamlEndmatter,
   createMarkedRenderer,
   createTurndownService,
+  type MarkdownOptions,
   markedTokenizer,
   normalizeBlockSpacing,
-  appendYamlEndmatter,
   prependYamlFrontmatter,
   protectRichTextRoundTripMarkdown,
   splitYamlDocumentMetadata,
-  type MarkdownOptions,
 } from "../markdown";
 
 export interface CriticComment {
@@ -1469,13 +1469,16 @@ function serializeCriticChangeElement(
   const metadata = useEndmatter
     ? `{#${change.changeId}}`
     : serializeChangeMetadata(change);
+  // A Markdown hard break (`  \n`) inside CriticMarkup gets split across
+  // block tokens by Marked. Keep it inline for marked hardBreak round-trips.
+  const inlineContent = content.replace(/ {2}\n/g, "<br>");
 
   if (change.kind === "addition") {
-    return `{++${content}++}${metadata}${commentBlocks}`;
+    return `{++${inlineContent}++}${metadata}${commentBlocks}`;
   }
 
   if (change.kind === "deletion") {
-    return `{--${content}--}${metadata}${commentBlocks}`;
+    return `{--${inlineContent}--}${metadata}${commentBlocks}`;
   }
 
   if (change.kind === "substitution-new") {
@@ -1485,7 +1488,7 @@ function serializeCriticChangeElement(
       change.changeId,
     )
       ? ""
-      : `{++${content}++}${
+      : `{++${inlineContent}++}${
           useEndmatter
             ? `{#${change.changeId}}`
             : serializeChangeMetadata({
@@ -1506,10 +1509,10 @@ function serializeCriticChangeElement(
     )
   ) {
     const replacement = service.turndown(nextElement.innerHTML).trim();
-    return `{~~${content}~>${replacement}~~}${metadata}${commentBlocks}`;
+    return `{~~${inlineContent}~>${replacement.replace(/ {2}\n/g, "<br>")}~~}${metadata}${commentBlocks}`;
   }
 
-  return `{--${content}--}${
+  return `{--${inlineContent}--}${
     useEndmatter
       ? `{#${change.changeId}}`
       : serializeChangeMetadata({

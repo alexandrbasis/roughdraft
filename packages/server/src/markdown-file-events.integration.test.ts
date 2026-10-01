@@ -136,12 +136,15 @@ it.each([
     assert.notEqual(await expectContentVersion(saved), recreatedVersion);
     const history = await fetch(baseUrl + "/api/reviews/revisions?documentPath=" + encodeURIComponent(document));
     assert.equal(history.status, 200);
-    const revisions = (await history.json()).revisions;
-    assert.deepEqual(revisions.map(r => [r.number, r.source, r.content]), [
+    const { revisions, checkpoints } = await history.json();
+    assert.deepEqual(checkpoints.map(r => [r.number, r.source, r.content]), [
       [0, "baseline", "# Initial\\n"],
       [1, "external", recreated],
       [2, "external", saved],
     ], "SSE observes successive real file versions before the history endpoint reconciles");
+    assert.deepEqual(revisions.map(r => [r.number, r.actor, r.content, r.completedAt]), [
+      [1, "unknown", saved, null],
+    ], "observing file versions does not complete an actor iteration");
     assert.equal((await fetch(baseUrl + "/api/status")).status, 200);
     fs.unlinkSync(document);
     assert.deepEqual(await nextChange(), { path: "draft.md", exists: false, version: null });

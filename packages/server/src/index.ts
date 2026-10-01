@@ -10,21 +10,21 @@ import {
 } from "@roughdraft/rfm";
 import express, { type Express, type Request, type Response } from "express";
 import {
+  MarkdownConflictError,
+  writeMarkdownAtomically,
+} from "./atomic-markdown.js";
+import { runtimeStateDirectory } from "./local-domain.js";
+import {
   hasNonLoopbackHost,
   ROUGHDRAFT_DEFAULT_PORT,
   ROUGHDRAFT_PUBLIC_HOST,
   resolveBindHosts,
 } from "./network.js";
+import { ReviewDatabase } from "./review-database.js";
 import { ReviewEventQueue } from "./review-events.js";
+import { installReviewHistoryRoutes } from "./review-history-routes.js";
 import { ReviewRegistry } from "./review-registry.js";
 import { installReviewRoutes } from "./review-routes.js";
-import { runtimeStateDirectory } from "./local-domain.js";
-import { ReviewDatabase } from "./review-database.js";
-import { installReviewHistoryRoutes } from "./review-history-routes.js";
-import {
-  MarkdownConflictError,
-  writeMarkdownAtomically,
-} from "./atomic-markdown.js";
 import { resolveUpdateStatus } from "./update-status.js";
 
 const __dirname = path.dirname(fileURLToPath(import.meta.url));
@@ -447,6 +447,8 @@ export function createApp(options: CreateAppOptions = {}): CreateAppResult {
   const reviewDatabase = new ReviewDatabase(options.stateDirectory);
   const reviewEvents = new ReviewEventQueue(reviewDatabase);
   const reviewRegistry = new ReviewRegistry({ persistence: reviewDatabase });
+  for (const documentPath of reviewDatabase.pendingAgentHandoffPaths())
+    reviewRegistry.register(documentPath);
   app.locals.reviewDatabase = reviewDatabase;
 
   function saveMarkdown(
@@ -639,7 +641,10 @@ export function createApp(options: CreateAppOptions = {}): CreateAppResult {
 
     const page = markdownPageFromFile(relativePath, absolutePath);
     reviewDatabase.observeRevision(absolutePath, page.content);
-    res.json(page);
+    res.json({
+      ...page,
+      reviewState: reviewDatabase.documentEditingState(absolutePath),
+    });
   });
 
   app.get("/api/markdown-file/events", (req, res) => {
@@ -763,6 +768,91 @@ export function createApp(options: CreateAppOptions = {}): CreateAppResult {
     });
   });
 
+  app.post("/api/reviews/submit", (req, res) => {
+    const target = markdownPathFromRequest(req, res);
+    if (!target) return;
+    const { content, expectedVersion } = req.body as {
+      content?: unknown;
+      expectedVersion?: unknown;
+    };
+    if (
+      typeof content !== "string" ||
+      typeof expectedVersion !== "string" ||
+      !/^[a-f0-9]{64}$/.test(expectedVersion)
+    ) {
+      res
+        .status(400)
+        .json({ error: "content and a SHA-256 expectedVersion are required" });
+      return;
+    }
+    const file = fs.realpathSync(target.absolutePath);
+    const before = fs.readFileSync(file, "utf8");
+    const currentVersion = crypto
+      .createHash("sha256")
+      .update(before)
+      .digest("hex");
+    const latest = reviewDatabase.completedIterations(file).at(-1);
+    const retry =
+      before === content &&
+      latest?.actor === "agent" &&
+      latest.content === content &&
+      reviewDatabase.documentEditingState(file) === "awaiting-review";
+    if (currentVersion !== expectedVersion && !retry) {
+      res.status(409).json({
+        error:
+          "Markdown changed since it was read; read again before submitting",
+        currentVersion,
+      });
+      return;
+    }
+    const drafts = reviewDatabase.listDrafts(file);
+    if (
+      reviewDatabase.documentEditingState(file) === "editing" ||
+      drafts.some((draft) => draft.content !== before)
+    ) {
+      res.status(409).json({
+        error:
+          "Human editing or an unsaved browser draft is active; wait for review completion",
+      });
+      return;
+    }
+    if (!retry && before !== content) {
+      const writeId = reviewDatabase.prepareWrite(
+        file,
+        content,
+        undefined,
+        "agent",
+      );
+      try {
+        writeMarkdownAtomically(file, content, { expectedContent: before });
+      } catch (error) {
+        if (error instanceof MarkdownConflictError) {
+          reviewDatabase.cancelWrite(writeId);
+          res.status(409).json({
+            error:
+              "Markdown changed while submitting; read again before retrying",
+          });
+          return;
+        }
+        throw error;
+      }
+      reviewDatabase.finishWrite(writeId);
+    } else if (!retry) {
+      reviewDatabase.completeUnchangedAgentSubmission(file, content);
+    }
+    const record = reviewRegistry.register(file);
+    const savedContent = fs.readFileSync(file, "utf8");
+    res.status(200).json({
+      documentPath: file,
+      content: savedContent,
+      version: crypto.createHash("sha256").update(savedContent).digest("hex"),
+      editingState: reviewDatabase.documentEditingState(file),
+      iterations: reviewDatabase.completedIterations(file),
+      route: record.route,
+      retried: retry,
+    });
+  });
+
   app.post("/api/review-events", (req, res) => {
     const target = markdownPathFromRequest(req, res);
     if (!target) return;
@@ -774,6 +864,22 @@ export function createApp(options: CreateAppOptions = {}): CreateAppResult {
     ) {
       res.status(400).json({
         error: `overallComment must be ${MAX_OVERALL_COMMENT_LENGTH} characters or fewer`,
+      });
+      return;
+    }
+
+    const expectedVersion = req.body?.expectedVersion;
+    if (expectedVersion !== undefined && typeof expectedVersion !== "string") {
+      res.status(400).json({ error: "expectedVersion must be a string" });
+      return;
+    }
+    if (
+      expectedVersion !== undefined &&
+      expectedVersion !== fileVersionFromFile(target.absolutePath)
+    ) {
+      res.status(409).json({
+        error:
+          "Markdown changed before review completion. Reload before completing the review.",
       });
       return;
     }

@@ -12,7 +12,7 @@ import {
   useRef,
   useState,
 } from "react";
-
+import { buildLocationForLinkedMarkdownDocument } from "./app-navigation";
 import { CommentAssetContext, CommentUploadContext } from "./CommentBody";
 import { CommentEditorList } from "./CommentEditorList";
 import {
@@ -43,7 +43,6 @@ import {
 } from "./editor-extensions";
 import { cn } from "./lib/utils";
 import { MarkdownCodeEditor } from "./MarkdownCodeEditor";
-import { buildLocationForLinkedMarkdownDocument } from "./app-navigation";
 import { toHtml } from "./markdown";
 import { revealMermaidSourceForPosition } from "./mermaid-selection";
 import {
@@ -56,6 +55,7 @@ import { useCommentDock } from "./useCommentDock";
 import { useReviewLayoutShiftAnimation } from "./useReviewLayoutShiftAnimation";
 
 export type DocumentSaveState = "saved" | "unsaved" | "saving" | "error";
+export const DOCUMENT_AUTOSAVE_DELAY_MS = 10_000;
 
 export type ManualSaveResult =
   | { status: "saved" }
@@ -78,6 +78,7 @@ interface PageCardProps {
   focusRequestKey?: string | null;
   onSave: (id: string, content: string) => Promise<void>;
   onSaveStateChange?: (state: DocumentSaveState) => void;
+  onAutosaveDeadlineChange?: (deadline: number | null) => void;
   editorViewMode?: EditorViewMode;
   interactionMode?: DocumentInteractionMode;
   backend: StorageBackend;
@@ -99,6 +100,7 @@ interface PageCardEditorSurfaceProps {
   focusRequestKey: string | null;
   onSave: (id: string, content: string) => Promise<void>;
   onSaveStateChange: (state: DocumentSaveState) => void;
+  onAutosaveDeadlineChange?: (deadline: number | null) => void;
   editorViewMode: EditorViewMode;
   interactionMode: DocumentInteractionMode;
   backend: StorageBackend;
@@ -357,7 +359,7 @@ function getDocumentCriticChanges(
   const changes = new Map<string, Pick<CriticChangeAttrs, "changeId">>();
 
   editor.state.doc.descendants((node) => {
-    if (!node.isText) return;
+    if (!node.isText && node.type.name !== "hardBreak") return;
 
     for (const mark of node.marks) {
       if (mark.type.name !== "criticChange") continue;
@@ -461,7 +463,7 @@ function getDocumentCriticChangeRailItems(
   }
 
   editor.state.doc.descendants((node) => {
-    if (!node.isText || !node.text) return;
+    if (!node.isText && node.type.name !== "hardBreak") return;
 
     const changeMark = node.marks.find(
       (mark) =>
@@ -493,10 +495,11 @@ function getDocumentCriticChangeRailItems(
     };
     existing.kind = kind;
 
+    const changeText = node.isText ? (node.text ?? "") : "Line break";
     if (change.kind === "addition" || change.kind === "substitution-new") {
-      existing.newText += node.text;
+      existing.newText += changeText;
     } else {
-      existing.oldText += node.text;
+      existing.oldText += changeText;
     }
 
     for (const mark of node.marks) {
@@ -536,7 +539,7 @@ function getCriticChangeRange(editor: Editor | null, changeId: string) {
   let to: number | null = null;
 
   editor.state.doc.descendants((node, pos) => {
-    if (!node.isText) return;
+    if (!node.isText && node.type.name !== "hardBreak") return;
 
     const hasChange = node.marks.some(
       (mark) =>
@@ -567,7 +570,7 @@ function addCommentIdsToCriticChange(
   const tr = editor.state.tr;
 
   editor.state.doc.descendants((node, pos) => {
-    if (!node.isText) return;
+    if (!node.isText && node.type.name !== "hardBreak") return;
 
     const hasChange = node.marks.some(
       (mark) =>
@@ -1026,6 +1029,27 @@ const RichTextEditorSurface = memo(function RichTextEditorSurface({
         handleKeyDown: (view, event) => {
           if (interactionModeRef.current !== "suggesting") return false;
 
+          if (event.key === "Enter" && event.shiftKey) {
+            event.preventDefault();
+            const currentEditor = editorRef.current;
+            if (!currentEditor) return true;
+
+            const { selection, schema } = view.state;
+            const mark =
+              getReusableSuggestionInputMark(currentEditor, selection.from) ??
+              schema.marks.criticChange.create(
+                createCriticChange("addition", undefined, {
+                  existingChanges: getDocumentCriticChanges(currentEditor),
+                }),
+              );
+            const tr = view.state.tr.replaceSelectionWith(
+              schema.nodes.hardBreak.create(null, null, [mark]),
+              false,
+            );
+            view.dispatch(tr.scrollIntoView());
+            return true;
+          }
+
           if (event.key === "Enter") {
             event.preventDefault();
 
@@ -1187,9 +1211,8 @@ const RichTextEditorSurface = memo(function RichTextEditorSurface({
             (m.attrs.kind === "addition" ||
               m.attrs.kind === "substitution-new");
 
-          // Collect segments, distinguishing suggested-insertion text
-          // from original text so we can delete the former and mark the
-          // latter.
+          // Collect segments, including inline line breaks, so Backspace can
+          // remove a new break or suggest deleting an existing one.
           type Segment = {
             from: number;
             to: number;
@@ -1197,7 +1220,7 @@ const RichTextEditorSurface = memo(function RichTextEditorSurface({
           };
           const segments: Segment[] = [];
           view.state.doc.nodesBetween(from, to, (node, pos) => {
-            if (!node.isText) return;
+            if (!node.isText && node.type.name !== "hardBreak") return;
             const segFrom = Math.max(pos, from);
             const segTo = Math.min(pos + node.nodeSize, to);
             if (segFrom >= segTo) return;
@@ -2003,7 +2026,7 @@ const RichTextEditorSurface = memo(function RichTextEditorSurface({
           >
             <div
               data-testid="document-content-card"
-              className={cn(contentCardClass, "px-10 py-10 sm:px-14 sm:py-14")}
+              className={cn(contentCardClass, "px-6 py-8 sm:px-14 sm:py-14")}
             >
               <EditorContextMenu
                 editor={editor}
@@ -2197,6 +2220,7 @@ const PageCardEditorSurface = memo(function PageCardEditorSurface({
   focusRequestKey,
   onSave,
   onSaveStateChange,
+  onAutosaveDeadlineChange,
   editorViewMode,
   interactionMode,
   backend,
@@ -2210,6 +2234,7 @@ const PageCardEditorSurface = memo(function PageCardEditorSurface({
   initiallyDirty,
 }: PageCardEditorSurfaceProps) {
   const saveTimer = useRef<ReturnType<typeof setTimeout> | null>(null);
+  const pendingSaveSinceRef = useRef<number | null>(null);
   const inFlightSaveRef = useRef<Promise<ManualSaveResult> | null>(null);
   const saveQueueRef = useRef<SerializedSaveQueue | null>(null);
   const saveHandlerRef = useRef(onSave);
@@ -2266,6 +2291,7 @@ const PageCardEditorSurface = memo(function PageCardEditorSurface({
   const performSave = useCallback(
     async (nextMarkdown: string): Promise<ManualSaveResult> => {
       if (saveBlocked) {
+        onAutosaveDeadlineChange?.(null);
         onSaveStateChange(
           nextMarkdown === lastAcceptedMarkdownRef.current
             ? "saved"
@@ -2294,7 +2320,11 @@ const PageCardEditorSurface = memo(function PageCardEditorSurface({
         lastAcceptedMarkdownRef.current = nextMarkdown;
         reportDirtyState(pendingMarkdownRef.current !== nextMarkdown);
         onSaveStateChange(
-          pendingMarkdownRef.current === nextMarkdown ? "saved" : "saving",
+          pendingMarkdownRef.current === nextMarkdown
+            ? "saved"
+            : saveTimer.current
+              ? "unsaved"
+              : "saving",
         );
         return { status: "saved" };
       } catch (error) {
@@ -2303,7 +2333,13 @@ const PageCardEditorSurface = memo(function PageCardEditorSurface({
         return { status: "error", error };
       }
     },
-    [onSaveStateChange, rememberRecentMarkdown, reportDirtyState, saveBlocked],
+    [
+      onAutosaveDeadlineChange,
+      onSaveStateChange,
+      rememberRecentMarkdown,
+      reportDirtyState,
+      saveBlocked,
+    ],
   );
 
   const scheduleSave = useCallback(
@@ -2314,6 +2350,7 @@ const PageCardEditorSurface = memo(function PageCardEditorSurface({
       }
 
       if (saveBlocked) {
+        onAutosaveDeadlineChange?.(null);
         onSaveStateChange(
           nextMarkdown === lastAcceptedMarkdownRef.current
             ? "saved"
@@ -2322,19 +2359,31 @@ const PageCardEditorSurface = memo(function PageCardEditorSurface({
         return;
       }
 
-      onSaveStateChange("saving");
-      saveTimer.current = setTimeout(() => {
-        saveTimer.current = null;
-        inFlightSaveRef.current = performSave(nextMarkdown).finally(() => {
-          inFlightSaveRef.current = null;
-        });
-        void inFlightSaveRef.current;
-      }, 500);
+      onSaveStateChange("unsaved");
+      pendingSaveSinceRef.current ??= Date.now();
+      const deadline = pendingSaveSinceRef.current + DOCUMENT_AUTOSAVE_DELAY_MS;
+      onAutosaveDeadlineChange?.(deadline);
+      saveTimer.current = setTimeout(
+        () => {
+          saveTimer.current = null;
+          pendingSaveSinceRef.current = null;
+          onAutosaveDeadlineChange?.(null);
+          inFlightSaveRef.current = performSave(
+            pendingMarkdownRef.current,
+          ).finally(() => {
+            inFlightSaveRef.current = null;
+          });
+          void inFlightSaveRef.current;
+        },
+        Math.max(0, deadline - Date.now()),
+      );
     },
-    [onSaveStateChange, performSave, saveBlocked],
+    [onAutosaveDeadlineChange, onSaveStateChange, performSave, saveBlocked],
   );
 
   const flushSave = useCallback(async (): Promise<ManualSaveResult> => {
+    pendingSaveSinceRef.current = null;
+    onAutosaveDeadlineChange?.(null);
     if (saveTimer.current) {
       clearTimeout(saveTimer.current);
       saveTimer.current = null;
@@ -2363,7 +2412,7 @@ const PageCardEditorSurface = memo(function PageCardEditorSurface({
     }
 
     return await performSave(pendingMarkdownRef.current);
-  }, [onSaveStateChange, performSave]);
+  }, [onAutosaveDeadlineChange, onSaveStateChange, performSave]);
 
   const retrySave = useCallback(async (): Promise<ManualSaveResult> => {
     if (saveBlocked) return { status: "blocked" };
@@ -2396,7 +2445,11 @@ const PageCardEditorSurface = memo(function PageCardEditorSurface({
     lastAcceptedMarkdownRef.current = currentMarkdown;
     reportDirtyState(pendingMarkdownRef.current !== currentMarkdown);
     onSaveStateChange(
-      pendingMarkdownRef.current === currentMarkdown ? "saved" : "saving",
+      pendingMarkdownRef.current === currentMarkdown
+        ? "saved"
+        : saveTimer.current
+          ? "unsaved"
+          : "saving",
     );
     return { status: "saved" };
   }, [onSaveStateChange, reportDirtyState, saveBlocked]);
@@ -2459,13 +2512,14 @@ const PageCardEditorSurface = memo(function PageCardEditorSurface({
     if (!saveBlocked || !saveTimer.current) return;
     clearTimeout(saveTimer.current);
     saveTimer.current = null;
+    onAutosaveDeadlineChange?.(null);
     onSaveStateChange(
       !needsInitialSaveRef.current &&
         pendingMarkdownRef.current === lastAcceptedMarkdownRef.current
         ? "saved"
         : "unsaved",
     );
-  }, [onSaveStateChange, saveBlocked]);
+  }, [onAutosaveDeadlineChange, onSaveStateChange, saveBlocked]);
 
   useEffect(() => {
     if (!initiallyDirty) return;
@@ -2549,6 +2603,7 @@ export function PageCard({
   focusRequestKey = null,
   onSave,
   onSaveStateChange,
+  onAutosaveDeadlineChange,
   editorViewMode = "rich-text",
   interactionMode = "editing",
   backend,
@@ -2580,6 +2635,7 @@ export function PageCard({
             focusRequestKey={focusRequestKey}
             onSave={onSave}
             onSaveStateChange={setSaveState}
+            onAutosaveDeadlineChange={onAutosaveDeadlineChange}
             editorViewMode={editorViewMode}
             interactionMode={interactionMode}
             backend={backend}

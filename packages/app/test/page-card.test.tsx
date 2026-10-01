@@ -3,6 +3,10 @@ import { act } from "react";
 import { createRoot } from "react-dom/client";
 import { afterEach, beforeEach, describe, expect, it, vi } from "vitest";
 import {
+  criticMarkdownToEditorState,
+  editorStateToCriticMarkdown,
+} from "../src/critic-markup";
+import {
   type DocumentSaveController,
   type ManualSaveResult,
   PageCard,
@@ -213,6 +217,7 @@ async function pressEditorKey(
     ctrlKey?: boolean;
     altKey?: boolean;
     metaKey?: boolean;
+    shiftKey?: boolean;
   } = {},
 ) {
   await act(async () => {
@@ -283,6 +288,7 @@ type RenderedPageCard = {
   container: HTMLDivElement;
   onSave: ReturnType<typeof vi.fn>;
   onSaveStateChange: ReturnType<typeof vi.fn>;
+  onAutosaveDeadlineChange: ReturnType<typeof vi.fn>;
   getEditor: () => Editor;
   getSaveController: () => DocumentSaveController;
   rerender: (overrides?: PageCardTestOptions) => Promise<void>;
@@ -300,6 +306,7 @@ async function renderPageCard(
   const backend = options.backend ?? createBackend();
   const onSave = vi.fn().mockResolvedValue(undefined);
   const onSaveStateChange = vi.fn();
+  const onAutosaveDeadlineChange = vi.fn();
   let editor: Editor | null = null;
   let saveController: DocumentSaveController | null = null;
 
@@ -316,6 +323,7 @@ async function renderPageCard(
     interactionMode: options.interactionMode ?? "editing",
     onSave,
     onSaveStateChange,
+    onAutosaveDeadlineChange,
     backend,
     onEditorReady: (nextEditor: Editor | null) => {
       editor = nextEditor;
@@ -351,6 +359,7 @@ async function renderPageCard(
     container,
     onSave,
     onSaveStateChange,
+    onAutosaveDeadlineChange,
     getEditor() {
       expect(editor).not.toBeNull();
       return editor as Editor;
@@ -516,10 +525,10 @@ describe("PageCard editor integration", () => {
 
     await insertTextAtEnd(rendered.getEditor(), " now");
 
-    expect(rendered.onSaveStateChange).toHaveBeenCalledWith("saving");
+    expect(rendered.onSaveStateChange).toHaveBeenCalledWith("unsaved");
 
     await act(async () => {
-      vi.advanceTimersByTime(500);
+      vi.advanceTimersByTime(10_000);
       await Promise.resolve();
     });
 
@@ -545,7 +554,7 @@ describe("PageCard editor integration", () => {
 
     await insertTextAtEnd(rendered.getEditor(), " now");
 
-    expect(rendered.onSaveStateChange.mock.calls.at(-1)?.[0]).toBe("saving");
+    expect(rendered.onSaveStateChange.mock.calls.at(-1)?.[0]).toBe("unsaved");
     expect(rendered.onSave).not.toHaveBeenCalled();
 
     await act(async () => {
@@ -565,6 +574,111 @@ describe("PageCard editor integration", () => {
 
     expect(rendered.onSave).toHaveBeenCalledTimes(1);
     expect(rendered.onSaveStateChange.mock.calls.at(-1)?.[0]).toBe("saved");
+  });
+
+  it("autosaves the latest markdown every ten seconds while editing continues", async () => {
+    const rendered = await renderPageCard({
+      page: {
+        id: "continuous-edit",
+        title: "Continuous edit",
+        content: "Start",
+      },
+      selected: true,
+    });
+    vi.useFakeTimers();
+
+    const deadline = Date.now() + 10_000;
+    await insertTextAtEnd(rendered.getEditor(), "x");
+    expect(rendered.onAutosaveDeadlineChange).toHaveBeenLastCalledWith(
+      deadline,
+    );
+    await act(async () => {
+      await vi.advanceTimersByTimeAsync(4_900);
+    });
+    expect(rendered.onSave).not.toHaveBeenCalled();
+
+    await insertTextAtEnd(rendered.getEditor(), "y");
+    expect(rendered.onAutosaveDeadlineChange).toHaveBeenLastCalledWith(
+      deadline,
+    );
+    await act(async () => {
+      await vi.advanceTimersByTimeAsync(4_900);
+    });
+    expect(rendered.onSave).not.toHaveBeenCalled();
+
+    await insertTextAtEnd(rendered.getEditor(), "z");
+    await act(async () => {
+      await vi.advanceTimersByTimeAsync(199);
+    });
+    expect(rendered.onSave).not.toHaveBeenCalled();
+    await act(async () => {
+      await vi.advanceTimersByTimeAsync(1);
+    });
+    expect(rendered.onSave).toHaveBeenCalledOnce();
+    expect(rendered.onAutosaveDeadlineChange).toHaveBeenLastCalledWith(null);
+    expect(rendered.onSave).toHaveBeenCalledWith(
+      "continuous-edit",
+      expect.stringContaining("Startxyz"),
+    );
+
+    const nextDeadline = Date.now() + 10_000;
+    await insertTextAtEnd(rendered.getEditor(), "w");
+    expect(rendered.onAutosaveDeadlineChange).toHaveBeenLastCalledWith(
+      nextDeadline,
+    );
+    await act(async () => {
+      await vi.advanceTimersByTimeAsync(9_999);
+    });
+    expect(rendered.onSave).toHaveBeenCalledTimes(1);
+    await act(async () => {
+      await vi.advanceTimersByTimeAsync(1);
+    });
+    expect(rendered.onSave).toHaveBeenCalledTimes(2);
+    expect(rendered.onSave).toHaveBeenLastCalledWith(
+      "continuous-edit",
+      expect.stringContaining("Startxyzw"),
+    );
+  });
+
+  it("reports unsaved when an older write finishes after newer typing", async () => {
+    const rendered = await renderPageCard({
+      page: {
+        id: "late-ack",
+        title: "Late acknowledgement",
+        content: "Start",
+      },
+      selected: true,
+    });
+    let finishFirstWrite!: () => void;
+    rendered.onSave.mockImplementationOnce(
+      () =>
+        new Promise<void>((resolve) => {
+          finishFirstWrite = resolve;
+        }),
+    );
+    vi.useFakeTimers();
+
+    await insertTextAtEnd(rendered.getEditor(), " first");
+    await act(async () => {
+      vi.advanceTimersByTime(10_000);
+      await Promise.resolve();
+    });
+    expect(rendered.onSave).toHaveBeenCalledTimes(1);
+    expect(rendered.onSaveStateChange.mock.calls.at(-1)?.[0]).toBe("saving");
+
+    const secondDeadline = Date.now() + 10_000;
+    await insertTextAtEnd(rendered.getEditor(), " second");
+    expect(rendered.onSaveStateChange.mock.calls.at(-1)?.[0]).toBe("unsaved");
+    await act(async () => {
+      finishFirstWrite();
+      await Promise.resolve();
+      await Promise.resolve();
+    });
+    expect(rendered.onSaveStateChange.mock.calls.at(-1)?.[0]).toBe("unsaved");
+    expect(rendered.onSave).toHaveBeenCalledTimes(1);
+    expect(rendered.onAutosaveDeadlineChange).toHaveBeenLastCalledWith(
+      secondDeadline,
+    );
   });
 
   it("manual save reports save failure without clearing dirty state", async () => {
@@ -612,6 +726,7 @@ describe("PageCard editor integration", () => {
 
     expect(result).toEqual({ status: "blocked" });
     expect(rendered.onSave).not.toHaveBeenCalled();
+    expect(rendered.onAutosaveDeadlineChange).toHaveBeenLastCalledWith(null);
     expect(rendered.onSaveStateChange.mock.calls.at(-1)?.[0]).toBe("unsaved");
   });
 
@@ -642,7 +757,7 @@ describe("PageCard editor integration", () => {
     await insertTextAtEnd(rendered.getEditor(), " updated");
 
     await act(async () => {
-      vi.advanceTimersByTime(500);
+      vi.advanceTimersByTime(10_000);
       await Promise.resolve();
     });
 
@@ -683,7 +798,7 @@ describe("PageCard editor integration", () => {
     await insertTextAtEnd(rendered.getEditor(), " updated");
 
     await act(async () => {
-      vi.advanceTimersByTime(500);
+      vi.advanceTimersByTime(10_000);
       await Promise.resolve();
     });
 
@@ -723,7 +838,7 @@ describe("PageCard editor integration", () => {
     await insertTextAtEnd(editor, " updated");
 
     await act(async () => {
-      vi.advanceTimersByTime(500);
+      vi.advanceTimersByTime(10_000);
       await Promise.resolve();
     });
 
@@ -779,7 +894,7 @@ describe("PageCard editor integration", () => {
     await insertTextAtEnd(rendered.getEditor(), " updated");
 
     await act(async () => {
-      vi.advanceTimersByTime(500);
+      vi.advanceTimersByTime(10_000);
       await Promise.resolve();
     });
 
@@ -969,7 +1084,7 @@ describe("PageCard editor integration", () => {
     });
 
     await act(async () => {
-      vi.advanceTimersByTime(500);
+      vi.advanceTimersByTime(10_000);
       await Promise.resolve();
     });
 
@@ -1004,7 +1119,7 @@ describe("PageCard editor integration", () => {
     await typeTextAsBrowserInput(editor, "now");
 
     await act(async () => {
-      vi.advanceTimersByTime(500);
+      vi.advanceTimersByTime(10_000);
       await Promise.resolve();
     });
 
@@ -1039,7 +1154,7 @@ describe("PageCard editor integration", () => {
     });
 
     await act(async () => {
-      vi.advanceTimersByTime(500);
+      vi.advanceTimersByTime(10_000);
       await Promise.resolve();
     });
 
@@ -1068,7 +1183,7 @@ describe("PageCard editor integration", () => {
     await typeTextAsBrowserInput(editor, "new");
 
     await act(async () => {
-      vi.advanceTimersByTime(500);
+      vi.advanceTimersByTime(10_000);
       await Promise.resolve();
     });
 
@@ -1106,7 +1221,7 @@ describe("PageCard editor integration", () => {
     await pressEditorKey(editor, "Delete");
 
     await act(async () => {
-      vi.advanceTimersByTime(500);
+      vi.advanceTimersByTime(10_000);
       await Promise.resolve();
     });
 
@@ -1144,7 +1259,7 @@ describe("PageCard editor integration", () => {
     expect(rendered.container.textContent).toContain("Inserted paragraph");
 
     await act(async () => {
-      vi.advanceTimersByTime(500);
+      vi.advanceTimersByTime(10_000);
       await Promise.resolve();
     });
 
@@ -1154,6 +1269,123 @@ describe("PageCard editor integration", () => {
         /^Start\n\n\{\+\+\u2060\+\+\}\{id="s1" by="user" at="[^"]+"\}\n$/,
       ),
     );
+  });
+
+  it("suggesting mode removes a Shift+Enter soft break with Backspace", async () => {
+    const rendered = await renderPageCard({
+      page: {
+        id: "doc-suggesting-soft-break",
+        title: "Doc Suggesting Soft Break",
+        content: "First line",
+      },
+      interactionMode: "suggesting",
+      selected: true,
+    });
+    const editor = rendered.getEditor();
+
+    await act(async () => {
+      editor.commands.focus("end");
+    });
+    await pressEditorKey(editor, "Enter", { shiftKey: true });
+
+    expect(editor.state.doc.childCount).toBe(1);
+    expect(editor.state.doc.firstChild?.lastChild?.type.name).toBe("hardBreak");
+    expect(editor.state.doc.firstChild?.lastChild?.marks[0]?.attrs.kind).toBe(
+      "addition",
+    );
+    const saved = editorStateToCriticMarkdown(editor.getJSON(), new Map());
+    const reopened = criticMarkdownToEditorState(saved).doc;
+    expect(reopened.content?.[0]?.content?.[1]).toMatchObject({
+      type: "hardBreak",
+      marks: [{ type: "criticChange", attrs: { kind: "addition" } }],
+    });
+
+    await pressEditorKey(editor, "Backspace");
+
+    expect(editor.state.doc.childCount).toBe(1);
+    expect(editor.state.doc.firstChild?.lastChild?.type.name).toBe("text");
+    expect(editor.getText()).toBe("First line");
+  });
+
+  it("suggesting mode marks an existing soft break for deletion and can reject that suggestion", async () => {
+    const rendered = await renderPageCard({
+      page: {
+        id: "doc-suggesting-existing-soft-break",
+        title: "Doc Suggesting Existing Soft Break",
+        content: "First line  \nSecond line\n",
+      },
+      interactionMode: "suggesting",
+      selected: true,
+    });
+    const editor = rendered.getEditor();
+    const secondLine = findTextRange(editor, "Second line");
+    expect(secondLine).not.toBeNull();
+
+    await act(async () => {
+      editor.commands.focus();
+      editor.commands.setTextSelection(secondLine?.from ?? 1);
+    });
+    await pressEditorKey(editor, "Backspace");
+
+    const breakNode = editor.state.doc.firstChild?.child(1);
+    expect(breakNode?.type.name).toBe("hardBreak");
+    expect(breakNode?.marks[0]?.attrs.kind).toBe("deletion");
+    const saved = editorStateToCriticMarkdown(editor.getJSON(), new Map());
+    const reopened = criticMarkdownToEditorState(saved).doc;
+    expect(reopened.content?.[0]?.content?.[1]).toMatchObject({
+      type: "hardBreak",
+      marks: [{ type: "criticChange", attrs: { kind: "deletion" } }],
+    });
+
+    await act(async () => {
+      editor.commands.rejectCriticChange(breakNode?.marks[0]?.attrs.changeId);
+    });
+    expect(editor.state.doc.firstChild?.child(1).type.name).toBe("hardBreak");
+    expect(editor.state.doc.firstChild?.child(1).marks).toHaveLength(0);
+
+    await act(async () => {
+      editor.commands.setContent(reopened);
+      editor.commands.acceptCriticChange(breakNode?.marks[0]?.attrs.changeId);
+    });
+    expect(editor.state.doc.firstChild?.childCount).toBe(1);
+    expect(editor.getText()).toBe("First lineSecond line");
+  });
+
+  it("accepts or rejects a saved suggested soft break", async () => {
+    const rendered = await renderPageCard({
+      page: {
+        id: "doc-suggesting-soft-break-review",
+        title: "Doc Suggesting Soft Break Review",
+        content: "First line",
+      },
+      interactionMode: "suggesting",
+      selected: true,
+    });
+    const editor = rendered.getEditor();
+    await act(async () => {
+      editor.commands.focus("end");
+    });
+    await pressEditorKey(editor, "Enter", { shiftKey: true });
+
+    const saved = editorStateToCriticMarkdown(editor.getJSON(), new Map());
+    const reopened = criticMarkdownToEditorState(saved).doc;
+    const changeId = reopened.content?.[0]?.content?.[1]?.marks?.[0]?.attrs
+      ?.changeId as string;
+    expect(changeId).toBeTruthy();
+
+    await act(async () => {
+      editor.commands.setContent(reopened);
+      editor.commands.rejectCriticChange(changeId);
+    });
+    expect(editor.state.doc.firstChild?.childCount).toBe(1);
+    expect(editor.getText()).toBe("First line");
+
+    await act(async () => {
+      editor.commands.setContent(reopened);
+      editor.commands.acceptCriticChange(changeId);
+    });
+    expect(editor.state.doc.firstChild?.child(1).type.name).toBe("hardBreak");
+    expect(editor.state.doc.firstChild?.child(1).marks).toHaveLength(0);
   });
 
   it("accepts and rejects inserted paragraph suggestions without leaving marker text", async () => {
@@ -1462,7 +1694,7 @@ describe("PageCard editor integration", () => {
     await typeTextAsBrowserInput(rendered.getEditor(), " now");
 
     await act(async () => {
-      vi.advanceTimersByTime(500);
+      vi.advanceTimersByTime(10_000);
       await Promise.resolve();
     });
 
@@ -1490,7 +1722,7 @@ describe("PageCard editor integration", () => {
     await insertTextAtEnd(editor, " updated");
 
     await act(async () => {
-      vi.advanceTimersByTime(500);
+      vi.advanceTimersByTime(10_000);
       await Promise.resolve();
     });
 
@@ -1536,7 +1768,7 @@ describe("PageCard editor integration", () => {
     await insertTextAtEnd(rendered.getEditor(), " updated");
 
     await act(async () => {
-      vi.advanceTimersByTime(500);
+      vi.advanceTimersByTime(10_000);
       await Promise.resolve();
     });
 
@@ -1646,7 +1878,7 @@ describe("PageCard editor integration", () => {
     });
 
     await act(async () => {
-      vi.advanceTimersByTime(500);
+      vi.advanceTimersByTime(10_000);
       await Promise.resolve();
     });
 
@@ -1760,7 +1992,7 @@ describe("PageCard editor integration", () => {
     });
 
     await act(async () => {
-      vi.advanceTimersByTime(500);
+      vi.advanceTimersByTime(10_000);
       await Promise.resolve();
     });
 
@@ -1928,7 +2160,7 @@ describe("PageCard editor integration", () => {
       await Promise.resolve();
     });
     await act(async () => {
-      vi.advanceTimersByTime(500);
+      vi.advanceTimersByTime(10_000);
       await Promise.resolve();
     });
 

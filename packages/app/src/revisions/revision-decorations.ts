@@ -6,7 +6,7 @@ import type { RevisionChange } from "./types";
 
 export interface RevisionDecorationState {
   changes: readonly RevisionChange[];
-  selectedRevision: number | null;
+  selectedRevisions: readonly number[] | null;
   activeChangeId: string | null;
   visible: boolean;
 }
@@ -18,7 +18,7 @@ export const revisionPluginKey = new PluginKey<PluginState>(
   "revisionDecorations",
 );
 export const revisionColorClass = (revision: number) =>
-  `revision-color-${(((revision - 1) % 6) + 6) % 6}`;
+  `revision-color-${(((revision - 1) % 30) + 30) % 30}`;
 
 function decorations(
   doc: Node,
@@ -27,26 +27,14 @@ function decorations(
 ): DecorationSet {
   if (!state.visible) return DecorationSet.empty;
   const items: Decoration[] = [];
-  const blocks = new Map<number, RevisionChange[]>();
   for (const change of state.changes) {
     if (
-      state.selectedRevision !== null &&
-      change.revision !== state.selectedRevision
+      state.selectedRevisions !== null &&
+      !state.selectedRevisions.includes(change.revision)
     )
       continue;
     const from = Math.max(0, Math.min(change.from, doc.content.size));
     const to = Math.max(from, Math.min(change.to, doc.content.size));
-    const resolved = doc.resolve(from);
-    let blockStart = from;
-    for (let depth = resolved.depth; depth > 0; depth--) {
-      if (resolved.node(depth).isTextblock) {
-        blockStart = resolved.start(depth);
-        break;
-      }
-    }
-    const group = blocks.get(blockStart) ?? [];
-    group.push(change);
-    blocks.set(blockStart, group);
     const color = revisionColorClass(change.revision);
     const active =
       change.id === state.activeChangeId ? " revision-change-active" : "";
@@ -87,7 +75,7 @@ function decorations(
             "aria-label",
             `Show text deleted in revision ${change.revision}: ${change.before.trim()}`,
           );
-          removed.title = `Deleted in R${change.revision} · Show before / after`;
+          removed.title = `Deleted in V${change.revision} · Show before / after`;
           const text = document.createElement("del");
           text.textContent = change.before;
           removed.append(text);
@@ -110,43 +98,6 @@ function decorations(
       ),
     );
   }
-  for (const [position, group] of blocks) {
-    const representative =
-      group.find((change) => change.id === state.activeChangeId) ?? group[0];
-    const revisions = [...new Set(group.map((change) => change.revision))];
-    const active = group.some((change) => change.id === state.activeChangeId);
-    items.push(
-      Decoration.widget(
-        position,
-        () => {
-          const anchor = document.createElement("span");
-          anchor.className = "revision-gutter-anchor";
-          const button = document.createElement("button");
-          button.type = "button";
-          button.className = `revision-change-marker revision-gutter-marker ${revisionColorClass(representative.revision)}${active ? " revision-change-active" : ""}`;
-          button.dataset.testid = "revision-change-marker";
-          button.dataset.revisionChangeId = representative.id;
-          button.dataset.revisionNumber = String(representative.revision);
-          button.textContent = `R${representative.revision}${revisions.length > 1 ? ` +${revisions.length - 1}` : ""}`;
-          const label = `Show ${group.length} ${group.length === 1 ? "change" : "changes"} in ${revisions.map((revision) => `R${revision}`).join(", ")}`;
-          button.setAttribute("aria-label", label);
-          button.title = label;
-          button.addEventListener("click", (event) => {
-            event.preventDefault();
-            event.stopPropagation();
-            onSelect(representative.id);
-          });
-          anchor.append(button);
-          return anchor;
-        },
-        {
-          key: `gutter:${position}:${group.map((change) => change.id).join(",")}:${representative.id}:${active}`,
-          side: -2,
-          stopEvent: () => true,
-        },
-      ),
-    );
-  }
   return DecorationSet.create(doc, items);
 }
 
@@ -159,7 +110,7 @@ export function createRevisionPlugin(
       init: () => ({
         settings: {
           changes: [],
-          selectedRevision: null,
+          selectedRevisions: null,
           activeChangeId: null,
           visible: false,
         },

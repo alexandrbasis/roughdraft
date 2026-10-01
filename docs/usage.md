@@ -121,7 +121,9 @@ Use `ROUGHDRAFT_STATE_DIR` to isolate another server. A custom
 `<state-file>.data/`. Servers with different state directories do not share
 registrations, settings, or completion history.
 
-Pending editor changes are saved in browser storage before autosave. After a
+Pending editor changes are saved in browser storage and synchronized to a
+per-tab server draft before the 10-second automatic disk save. **Save** and
+**Done Reviewing** flush the current editor content to disk immediately. After a
 reload, the editor offers recovery; if the file changed on disk, both versions
 are preserved for an explicit choice. Saving is serialized per document, and a
 failed write or unavailable browser storage remains visibly unsaved. Browser
@@ -130,6 +132,8 @@ a server copy, which another browser can explicitly recover. The editor shows
 when that copy fails; changes made while disconnected depend on the local browser
 copy until synchronization succeeds. Clearing browser storage removes that local
 copy. Review events already lost by older versions cannot be reconstructed.
+Permanent recovery points are kept when file content is written or a draft is
+discarded; each routine server-draft update does not create one.
 
 The review inbox shows ten records per page. Use All, Waiting, or Reviewed to
 filter the list; each filter shows its total count. The selected filter and page
@@ -152,9 +156,32 @@ edit after preview produces a conflict instead of being overwritten.
 Agents can inspect history and confirm that they processed a completion event:
 
 ```bash
+roughdraft read /absolute/path/to/draft.md
+roughdraft read /absolute/path/to/draft.md --json
+roughdraft submit /absolute/path/to/draft.md --from /absolute/path/to/edition.md --expected-version <version-from-read> --json
+roughdraft submit /absolute/path/to/draft.md --from - --expected-version <version-from-read> --json
 roughdraft history /absolute/path/to/draft.md --json
 roughdraft ack 42 --consumer-id agent-example --json
 ```
+
+`read` requires the running local server and does not open or complete a review. It
+prints the current saved Markdown, including CriticMarkup comments and suggestions,
+even while the user is still editing. It also shows whether editing is in progress
+and how many completed versions exist. A legacy or direct-path version with unknown
+completion shows its first-observed time and is excluded from that count. `--json`
+includes the full saved content, parsed feedback index, version history with a
+nullable completion time, and recovery drafts, checkpoints, and snapshots as
+separate fields. A recovery draft may contain newer unsaved text; it is not the
+saved document or a completed version. Remote document sessions do not yet provide
+this read contract.
+
+`submit` accepts complete Markdown from a file or stdin and conditionally saves it
+through the local server. Use the `version` returned by `read --json` as its
+required `--expected-version`. A successful submit records an Agent version and
+hands the document back for review. Repeating the same successful request is
+idempotent. If the file changed or human editing or a differing server draft is
+active, submit reports a conflict; read the latest document and resolve the
+conflict before trying again. It works with existing local Markdown files.
 
 Use the event sequence and consumer ID returned by your watch result in place of
 `42` and `agent-example`. Watching acknowledges receipt on capable servers;

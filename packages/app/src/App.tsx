@@ -1,6 +1,3 @@
-import packageManifest from "../../../package.json";
-import { pollJson } from "./poll-json";
-import { agentSetupPrompt } from "../../server/release-info.mjs";
 import {
   ArrowLeft,
   Braces,
@@ -24,6 +21,8 @@ import {
   useRef,
   useState,
 } from "react";
+import packageManifest from "../../../package.json";
+import { agentSetupPrompt } from "../../server/release-info.mjs";
 import {
   buildLocationForDocumentEditorViewMode,
   type DocumentEditorViewMode,
@@ -57,13 +56,14 @@ import {
 } from "./document-comments";
 import { cn } from "./lib/utils";
 import type { DocumentSaveState } from "./PageCard";
+import { pollJson } from "./poll-json";
 import { PreviewBackend } from "./preview-backend";
 import { RoughdraftFormatDemo } from "./RoughdraftFormatDemo";
 import { ReviewHome } from "./review-home/ReviewHome";
 import {
   getFriendlyReviewRouteFromLocation,
-  resolveReviewRoute,
   type ReviewRouteRecord,
+  resolveReviewRoute,
 } from "./review-home/review-route";
 import {
   type CompleteReviewOptions,
@@ -1504,6 +1504,7 @@ export function App() {
   );
   const [documentSaveState, setDocumentSaveState] =
     useState<DocumentSaveState>("saved");
+  const [reviewOpenRequestKey, setReviewOpenRequestKey] = useState(0);
   const [documentDiskChangeState, setDocumentDiskChangeState] =
     useState<DocumentDiskChangeState>("clean");
   const [documentForceResetKey, setDocumentForceResetKey] = useState<
@@ -1521,16 +1522,25 @@ export function App() {
   const documentDirtyRef = useRef(false);
   const documentSaveStateRef = useRef<DocumentSaveState>("saved");
   const documentDraftContentRef = useRef<string | null>(null);
+  const documentConflictEpochRef = useRef(0);
+  const documentWritesRef = useRef(
+    new Set<{ path: string; content: string }>(),
+  );
 
   backendRef.current = backend;
   documentPageRef.current = documentPage;
   activeDocumentPathRef.current = activeDocumentPath;
   documentSaveStateRef.current = documentSaveState;
 
-  const applyDocumentPage = useCallback((nextDocument: Page) => {
-    setDocumentPage(nextDocument);
-    documentDraftContentRef.current = nextDocument.content;
-  }, []);
+  const applyDocumentPage = useCallback(
+    (nextDocument: Page, preserveDraft = false) => {
+      documentPageRef.current = nextDocument;
+      setDocumentPage(nextDocument);
+      if (!preserveDraft)
+        documentDraftContentRef.current = nextDocument.content;
+    },
+    [],
+  );
 
   const loadDocument = useCallback(
     async (nextBackend: StorageBackend, relativePath: string) => {
@@ -1566,8 +1576,10 @@ export function App() {
     const clientId = `${Date.now().toString(36)}-${Math.random().toString(36).slice(2)}`;
     sourceUrl.searchParams.set("poll", "1");
     sourceUrl.searchParams.set("clientId", clientId);
-    if (requestedPathState.rawPath) {
-      sourceUrl.searchParams.set("path", requestedPathState.rawPath);
+    const openDocumentPath =
+      resolvedReviewRoute?.documentPath ?? requestedPathState.rawPath;
+    if (openDocumentPath) {
+      sourceUrl.searchParams.set("path", openDocumentPath);
     }
 
     const stopPolling = pollJson<{ url?: unknown }>(
@@ -1585,6 +1597,8 @@ export function App() {
           window.focus();
           if (nextUrl.href !== window.location.href) {
             window.location.assign(nextUrl.href);
+          } else {
+            setReviewOpenRequestKey((current) => current + 1);
           }
         } catch (error) {
           console.error("Failed to handle Roughdraft open request:", error);
@@ -1608,7 +1622,7 @@ export function App() {
       window.removeEventListener("pagehide", unregister);
       unregister();
     };
-  }, [requestedPathState.rawPath]);
+  }, [requestedPathState.rawPath, resolvedReviewRoute?.documentPath]);
 
   useEffect(() => {
     let cancelled = false;
@@ -1750,6 +1764,9 @@ export function App() {
           : undefined;
 
       let savedDocument: Page | undefined;
+      const conflictEpoch = documentConflictEpochRef.current;
+      const write = { path: activeDocumentPath, content };
+      documentWritesRef.current.add(write);
       try {
         savedDocument = await backendRef.current?.saveMarkdownFile(
           activeDocumentPath,
@@ -1757,7 +1774,9 @@ export function App() {
           expectedVersion,
         );
       } catch (error) {
+        documentWritesRef.current.delete(write);
         if (error instanceof MarkdownFileConflictError) {
+          documentConflictEpochRef.current += 1;
           setDocumentDiskChangeState("conflict");
         }
         throw error;
@@ -1773,9 +1792,15 @@ export function App() {
         version: expectedVersion,
       };
 
-      applyDocumentPage(nextDocument);
-      documentDirtyRef.current = false;
-      setDocumentDiskChangeState("clean");
+      if (activeDocumentPathRef.current === write.path) {
+        const stillDirty = documentDraftContentRef.current !== content;
+        applyDocumentPage(nextDocument, stillDirty);
+        documentDirtyRef.current = stillDirty;
+        if (documentConflictEpochRef.current === conflictEpoch)
+          setDocumentDiskChangeState("clean");
+      }
+      documentWritesRef.current.delete(write);
+      return nextDocument;
     },
     [activeDocumentPath, applyDocumentPage],
   );
@@ -1822,7 +1847,13 @@ export function App() {
     const currentPath = activeDocumentPathRef.current;
     if (!currentBackend || !currentPath) return;
 
+    const draftBeforeReload = documentDraftContentRef.current;
     const nextDocument = await currentBackend.getMarkdownFile(currentPath);
+    if (activeDocumentPathRef.current !== currentPath) return;
+    if (documentDraftContentRef.current !== draftBeforeReload)
+      throw new Error(
+        "Your edits changed while loading the file. Choose again to preserve the latest edits.",
+      );
     applyDocumentPage(nextDocument);
     documentDirtyRef.current = false;
     setDocumentDiskChangeState("clean");
@@ -1855,13 +1886,15 @@ export function App() {
       title,
     };
 
-    applyDocumentPage(savedDocument);
-    documentDirtyRef.current = false;
-    handleDocumentSaveStateChange("saved");
+    const stillDirty = documentDraftContentRef.current !== content;
+    applyDocumentPage(savedDocument, stillDirty);
+    documentDirtyRef.current = stillDirty;
+    handleDocumentSaveStateChange(stillDirty ? "unsaved" : "saved");
     setDocumentDiskChangeState("clean");
-    setDocumentForceResetKey(
-      `${currentPath}:${savedDocument.version ?? Date.now()}:overwrite`,
-    );
+    if (!stillDirty)
+      setDocumentForceResetKey(
+        `${currentPath}:${savedDocument.version ?? Date.now()}:overwrite`,
+      );
   }, [applyDocumentPage, handleDocumentSaveStateChange]);
 
   const handleCompleteReview = useCallback(
@@ -1891,12 +1924,21 @@ export function App() {
         title,
       };
 
-      applyDocumentPage(savedDocument);
-      documentDirtyRef.current = false;
+      const stillDirty = documentDraftContentRef.current !== content;
+      applyDocumentPage(savedDocument, stillDirty);
+      documentDirtyRef.current = stillDirty;
+      if (stillDirty) {
+        throw new Error(
+          "The document changed during handoff. Save the latest edits before finishing this iteration.",
+        );
+      }
       setDocumentDiskChangeState("clean");
 
       return currentBackend.completeReview
-        ? currentBackend.completeReview(currentPath, options)
+        ? currentBackend.completeReview(currentPath, {
+            ...options,
+            expectedVersion: savedDocument.version,
+          })
         : { delivered: false };
     },
     [applyDocumentPage],
@@ -1917,16 +1959,12 @@ export function App() {
         }
 
         if (!event.exists) {
+          documentConflictEpochRef.current += 1;
           setDocumentDiskChangeState("changed");
           return;
         }
 
         if (documentDiskChangeState === "paused") {
-          return;
-        }
-
-        if (documentDirtyRef.current) {
-          setDocumentDiskChangeState("changed");
           return;
         }
 
@@ -1938,7 +1976,25 @@ export function App() {
           try {
             const nextDocument =
               await currentBackend.getMarkdownFile(currentPath);
-            if (disposed) return;
+            if (disposed || activeDocumentPathRef.current !== currentPath)
+              return;
+            // A watcher may beat the HTTP response for our own write. Only
+            // foreign bytes can conflict with pending local work.
+            if (
+              nextDocument.version === documentPageRef.current?.version ||
+              [...documentWritesRef.current].some(
+                (write) =>
+                  write.path === currentPath &&
+                  write.content === nextDocument.content,
+              )
+            )
+              return;
+            // Editing can start while this asynchronous read is in flight.
+            if (documentDirtyRef.current) {
+              documentConflictEpochRef.current += 1;
+              setDocumentDiskChangeState("conflict");
+              return;
+            }
             applyDocumentPage(nextDocument);
             setDocumentDiskChangeState("clean");
           } catch (error) {
@@ -2035,6 +2091,7 @@ export function App() {
         onDocumentLocalContentChange={handleDocumentLocalContentChange}
         documentDiskChangeState={documentDiskChangeState}
         documentForceResetKey={documentForceResetKey}
+        reviewOpenRequestKey={reviewOpenRequestKey}
         onReloadDocumentFromDisk={handleReloadDocumentFromDisk}
         onKeepEditingWithoutAutosave={handleKeepEditingWithoutAutosave}
         onOverwriteDocumentOnDisk={handleOverwriteDocumentOnDisk}

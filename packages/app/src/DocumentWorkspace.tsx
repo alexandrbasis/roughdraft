@@ -7,6 +7,7 @@ import {
   CodeXml,
   Copy,
   Eye,
+  FileText,
   Loader2,
   MessageSquarePlus,
   PencilLine,
@@ -19,6 +20,7 @@ import { CommentComposer } from "./CommentComposer";
 import { writeTextToClipboard } from "./clipboard";
 import { RemoteSessionBanner } from "./components/RemoteSessionBanner";
 import { Button } from "./components/ui/button";
+import { ProgressRing } from "./components/ui/progress-ring";
 import {
   Popover,
   PopoverContent,
@@ -57,6 +59,7 @@ import {
   type DocumentInteractionMode,
   type DocumentSaveController,
   type DocumentSaveState,
+  DOCUMENT_AUTOSAVE_DELAY_MS,
   PageCard,
 } from "./PageCard";
 import { RobotsHighFiveToy } from "./RobotsHighFiveToy";
@@ -67,7 +70,6 @@ import {
   type ServerDraftClient,
 } from "./server-draft-client";
 import type { CompleteReviewOptions, Page, StorageBackend } from "./storage";
-import { useReviewLayoutShiftAnimation } from "./useReviewLayoutShiftAnimation";
 
 type DiskChangeState = "clean" | "changed" | "conflict" | "paused";
 type DraftRecoveryState =
@@ -84,6 +86,7 @@ type ReviewHandoffState =
   | "notifying"
   | "notified"
   | "undelivered"
+  | "completed"
   | "error";
 type FileCopyAction = "path" | "filename" | "markdown" | "rich-text";
 const FILE_COPY_PREVIEW_MAX_LENGTH = 34;
@@ -159,15 +162,15 @@ const conflictNoticeCopy: Record<
 > = {
   changed: {
     title: "File changed on disk",
-    body: "Roughdraft found a newer version of this file on disk. Reload to use that version, or overwrite it with your current draft.",
+    body: "Choose the file from disk or your edits to continue. The other copy will remain available for recovery.",
   },
   conflict: {
     title: "Save conflict",
-    body: "This file changed on disk while you have unsaved edits. Autosave is paused so your draft will not overwrite those changes.",
+    body: "This file changed on disk while you have unsaved edits. Choose which text to continue with. Both copies will remain available for recovery.",
   },
   paused: {
     title: "Autosave paused",
-    body: "Keep editing locally, then reload from disk to discard your draft or overwrite the disk file when you are ready.",
+    body: "Your latest edits are not in the document. Choose the file from disk or your edits to resume saving; the other copy remains available for recovery.",
   },
 };
 
@@ -313,7 +316,7 @@ function getSaveStatusViewModel(
       label: "Unsaved changes",
       ariaLabel: "Unsaved changes",
       tone: "neutral" as const,
-      Icon: Loader2,
+      Icon: PencilLine,
     };
   }
 
@@ -325,38 +328,109 @@ function getSaveStatusViewModel(
   };
 }
 
+function AutosaveCountdown({
+  deadline,
+  active,
+  className,
+}: {
+  deadline: number | null;
+  active: boolean;
+  className: string;
+}) {
+  const [now, setNow] = useState(Date.now);
+
+  useEffect(() => {
+    if (!active || deadline === null) return;
+    setNow(Date.now());
+    const timer = window.setInterval(() => {
+      const currentTime = Date.now();
+      setNow(currentTime);
+      if (currentTime >= deadline) window.clearInterval(timer);
+    }, 100);
+    return () => window.clearInterval(timer);
+  }, [active, deadline]);
+
+  const progress =
+    deadline === null
+      ? 100
+      : 100 * (1 - (deadline - now) / DOCUMENT_AUTOSAVE_DELAY_MS);
+
+  return (
+    <ProgressRing
+      value={progress}
+      aria-label="Autosave countdown"
+      aria-hidden={!active}
+      aria-live="off"
+      data-testid={active ? "document-save-status-icon" : undefined}
+      className={className}
+    />
+  );
+}
+
 export function DocumentSaveStatusIndicator({
   saveState,
   diskChangeState,
+  autosaveDeadline = null,
+  detail,
+  savedLabel,
 }: {
   saveState: DocumentSaveState;
   diskChangeState: DiskChangeState;
+  autosaveDeadline?: number | null;
+  detail?: string;
+  savedLabel?: string;
 }) {
   const saveStatus = getSaveStatusViewModel(saveState, diskChangeState);
+  const label =
+    saveStatus.label === "Saved" && savedLabel ? savedLabel : saveStatus.label;
   const SaveStatusIcon = saveStatus.Icon;
+  const showCountdown =
+    saveStatus.label === "Unsaved changes" && autosaveDeadline !== null;
+  const showSaved = saveStatus.label === "Saved";
+  const showOtherIcon = !showCountdown && !showSaved;
+  const iconTransition =
+    "absolute inset-0 size-full transition-[opacity,filter,scale] duration-300 ease-[cubic-bezier(0.2,0,0,1)] motion-reduce:transition-none";
+  const hiddenIcon = "scale-[0.25] opacity-0 blur-[4px]";
 
   return (
     <span
       data-testid="document-save-status"
       role="status"
-      aria-label={saveStatus.ariaLabel}
+      aria-label={label}
       className={cn(
-        "inline-flex size-7 shrink-0 items-center justify-center text-stone-400 dark:text-stone-500",
+        "inline-flex max-w-[min(24rem,calc(100vw-11rem))] min-h-7 items-start gap-1.5 rounded-md bg-background/95 px-2 py-1 text-xs leading-4 text-muted-foreground shadow-sm",
         saveStatus.tone === "warning" && "text-amber-600 dark:text-amber-400",
         saveStatus.tone === "danger" && "text-red-600 dark:text-red-400",
       )}
     >
-      <SaveStatusIcon
-        data-testid="document-save-status-icon"
-        className={cn(
-          "size-3.5 shrink-0",
-          (saveStatus.label === "Saving" ||
-            saveStatus.label === "Unsaved changes") &&
-            "animate-spin",
-          saveStatus.label === "Saved" && "document-save-status-saved",
-        )}
-        aria-hidden="true"
-      />
+      <span className="relative mt-px size-3.5 shrink-0">
+        <AutosaveCountdown
+          deadline={autosaveDeadline}
+          active={showCountdown}
+          className={cn(iconTransition, !showCountdown && hiddenIcon)}
+        />
+        <Check
+          data-testid={showSaved ? "document-save-status-icon" : undefined}
+          className={cn(iconTransition, !showSaved && hiddenIcon)}
+          aria-hidden="true"
+        />
+        <SaveStatusIcon
+          data-testid={showOtherIcon ? "document-save-status-icon" : undefined}
+          className={cn(
+            iconTransition,
+            !showOtherIcon && hiddenIcon,
+            saveStatus.label === "Saving" &&
+              "animate-spin motion-reduce:animate-none",
+          )}
+          aria-hidden="true"
+        />
+      </span>
+      <span>
+        <span className="block font-medium">{label}</span>
+        {detail ? (
+          <span className="mt-0.5 block text-[11px] leading-4">{detail}</span>
+        ) : null}
+      </span>
     </span>
   );
 }
@@ -394,11 +468,13 @@ export function getReviewHandoffButtonLabel({
       ? "Sent"
       : reviewHandoffState === "undelivered"
         ? "Not sent, but saved"
-        : reviewHandoffState === "error"
-          ? "Not sent"
-          : documentChangedSinceOpen
-            ? "I'm done"
-            : "Approve";
+        : reviewHandoffState === "completed"
+          ? "Review completed"
+          : reviewHandoffState === "error"
+            ? "Not sent"
+            : documentChangedSinceOpen
+              ? "I'm done"
+              : "Approve";
 }
 
 export function shouldLatchDocumentChangedSinceOpen({
@@ -420,12 +496,16 @@ interface DocumentWorkspaceProps {
   persistDraft?: boolean;
   documentEditorViewMode: DocumentEditorViewMode;
   onDocumentEditorViewModeChange: (mode: DocumentEditorViewMode) => void;
-  onSaveDocument: (id: string, content: string) => Promise<void>;
+  onSaveDocument: (
+    id: string,
+    content: string,
+  ) => Promise<Page | undefined> | Promise<void>;
   onDocumentSaveStateChange: (state: DocumentSaveState) => void;
   onDocumentDirtyStateChange: (isDirty: boolean) => void;
   onDocumentLocalContentChange: (markdown: string) => void;
   documentDiskChangeState: DiskChangeState;
   documentForceResetKey: string | null;
+  reviewOpenRequestKey?: number;
   onReloadDocumentFromDisk: () => void | Promise<void>;
   onKeepEditingWithoutAutosave: () => void;
   onOverwriteDocumentOnDisk: () => void | Promise<void>;
@@ -450,6 +530,7 @@ export function DocumentWorkspace({
   onDocumentLocalContentChange,
   documentDiskChangeState,
   documentForceResetKey,
+  reviewOpenRequestKey = 0,
   onReloadDocumentFromDisk,
   onKeepEditingWithoutAutosave,
   onOverwriteDocumentOnDisk,
@@ -459,9 +540,16 @@ export function DocumentWorkspace({
   const [documentInteractionMode, setDocumentInteractionMode] =
     useState<DocumentInteractionMode>("suggesting");
   const [saveState, setSaveState] = useState<DocumentSaveState>("saved");
+  const [autosaveDeadline, setAutosaveDeadline] = useState<number | null>(null);
   const [revisionEditor, setRevisionEditor] = useState<Editor | null>(null);
+  const [revisionLegendContainer, setRevisionLegendContainer] =
+    useState<HTMLDivElement | null>(null);
   const [reviewHandoffState, setReviewHandoffState] =
-    useState<ReviewHandoffState>("idle");
+    useState<ReviewHandoffState>(
+      documentPage?.reviewState === "completed" ? "completed" : "idle",
+    );
+  const reviewHandoffDocumentIdentityRef = useRef<string | null>(null);
+  const previousReviewOpenRequestKeyRef = useRef(reviewOpenRequestKey);
   const [reviewWatcherCount, setReviewWatcherCount] = useState(0);
   const [reviewHandoffPopoverOpen, setReviewHandoffPopoverOpen] =
     useState(false);
@@ -486,6 +574,11 @@ export function DocumentWorkspace({
   const [serverDrafts, setServerDrafts] = useState<ServerDraft[]>([]);
   const serverDraftsRef = useRef<ServerDraft[]>([]);
   const [serverDraftError, setServerDraftError] = useState<string | null>(null);
+  const [mirroredDraftRevision, setMirroredDraftRevision] = useState<
+    string | null
+  >(null);
+  const [draftActionPending, setDraftActionPending] = useState(false);
+  const [draftActionError, setDraftActionError] = useState<string | null>(null);
   const [recoveredFromServer, setRecoveredFromServer] = useState(false);
   const adoptedSourceRef = useRef<StoredDraft | null>(null);
   const serverClient = useMemo(
@@ -506,6 +599,9 @@ export function DocumentWorkspace({
   const draftInitializedPageRef = useRef(documentPage);
   const draftBaseRef = useRef<ReturnType<typeof pageSnapshot> | null>(null);
   const draftRecordRef = useRef<StoredDraft | null>(null);
+  // Server list responses can retain an older copy after our active draft saves.
+  // Remember copies made by this editor without hiding recovery after a reopen.
+  const ownedDraftRevisionsRef = useRef(new Set<string>());
   const draftTabIdRef = useRef<string | null>(null);
   const latestLocalContentRef = useRef<string | null>(null);
 
@@ -534,13 +630,16 @@ export function DocumentWorkspace({
   const mirrorDraft = useCallback((draft: StoredDraft) => {
     const client = serverClientRef.current;
     if (!client) return;
+    ownedDraftRevisionsRef.current.add(draft.revision);
     void client
       .put(draft)
       .then((saved) => {
         if (serverClientRef.current !== client || !saved) return;
         // Acknowledging an older revision must not clear a newer failure.
-        if (draftRecordRef.current?.revision === draft.revision)
+        if (draftRecordRef.current?.revision === draft.revision) {
+          setMirroredDraftRevision(draft.revision);
           setServerDraftError(null);
+        }
       })
       .catch(() => {
         if (
@@ -649,17 +748,23 @@ export function DocumentWorkspace({
       draftInitializedPageRef.current = null;
       draftBaseRef.current = null;
       draftRecordRef.current = null;
+      ownedDraftRevisionsRef.current.clear();
       setDraftRecoveryState({ kind: "none" });
       setDraftContentOverride(null);
       return;
     }
 
-    // Refreshing the backend connection must not recover this live editor's
-    // own draft again and replace its failed-save state with "unsaved".
-    if (
-      draftStorageKeyRef.current === documentDraftStorageKey &&
-      draftInitializedPageRef.current === documentPage
-    ) {
+    // Recovery is an editor-open operation. An autosave acknowledgement is
+    // a new page object too, but must not recover (or discard) newer typing.
+    if (draftStorageKeyRef.current === documentDraftStorageKey) {
+      if (draftInitializedPageRef.current !== documentPage) {
+        draftInitializedPageRef.current = documentPage;
+        draftBaseRef.current = pageSnapshot(documentPage);
+        if (!draftRecordRef.current) {
+          latestLocalContentRef.current = documentPage.content;
+          setDraftContentOverride(null);
+        }
+      }
       return;
     }
     draftInitializedPageRef.current = documentPage;
@@ -667,6 +772,7 @@ export function DocumentWorkspace({
     draftBaseRef.current = pageSnapshot(documentPage);
     latestLocalContentRef.current = documentPage.content;
     draftRecordRef.current = null;
+    ownedDraftRevisionsRef.current.clear();
     setDraftContentOverride(null);
     setOtherTabDraftPending(false);
     setDraftRecoveryState({ kind: "checking" });
@@ -749,6 +855,15 @@ export function DocumentWorkspace({
 
   const handleDocumentLocalContentChange = useCallback(
     (markdown: string) => {
+      if (
+        markdown !== latestLocalContentRef.current &&
+        (reviewHandoffState === "notified" ||
+          reviewHandoffState === "undelivered" ||
+          reviewHandoffState === "completed")
+      ) {
+        setReviewHandoffState("idle");
+        setReviewHandoffPopoverOpen(false);
+      }
       onDocumentLocalContentChange(markdown);
       latestLocalContentRef.current = markdown;
 
@@ -786,7 +901,12 @@ export function DocumentWorkspace({
         reportDraftStorageError(error);
       }
     },
-    [mirrorDraft, onDocumentLocalContentChange, reportDraftStorageError],
+    [
+      mirrorDraft,
+      onDocumentLocalContentChange,
+      reportDraftStorageError,
+      reviewHandoffState,
+    ],
   );
 
   const clearConfirmedDraft = useCallback(
@@ -843,7 +963,27 @@ export function DocumentWorkspace({
       const adoptedSource = adoptedSourceRef.current;
       if (adoptedSource) serverCopiesAtSaveStart.push(adoptedSource);
 
-      await onSaveDocument(id, content);
+      const savedPage = await onSaveDocument(id, content);
+
+      // Rebase the still-pending edition on exactly the bytes acknowledged
+      // by this save. Its text and comments may be newer than that request.
+      if (draftStorageKeyRef.current === storageKey) {
+        const base = { content, version: savedPage?.version ?? null };
+        draftBaseRef.current = base;
+        const pending = draftRecordRef.current;
+        if (storage && pending && pending.content !== content) {
+          const rebased = createDraftRecord({
+            storageKey: pending.storageKey,
+            content: pending.content,
+            base,
+            revision: getDraftRevision(pending.tabId),
+            tabId: pending.tabId,
+          });
+          storage.write(rebased);
+          draftRecordRef.current = rebased;
+          mirrorDraft(rebased);
+        }
+      }
 
       if (!storage || !storageKey || !draftAtSaveStart) return;
       if (draftAtSaveStart.content !== content) return;
@@ -870,7 +1010,11 @@ export function DocumentWorkspace({
           clearConfirmedDraft(draftAtSaveStart);
           setDraftStorageError(null);
         } else {
-          setOtherTabDraftPending(true);
+          setOtherTabDraftPending(
+            storage
+              .list(storageKey)
+              .some((draft) => draft.tabId !== draftTabIdRef.current),
+          );
         }
       } catch (error) {
         reportDraftStorageError(error);
@@ -879,6 +1023,7 @@ export function DocumentWorkspace({
     },
     [
       clearConfirmedDraft,
+      mirrorDraft,
       onSaveDocument,
       removeServerDraft,
       reportDraftStorageError,
@@ -965,11 +1110,15 @@ export function DocumentWorkspace({
       updateServerDrafts(remoteCandidates);
       const localCandidates = storage
         .list(storageKey)
-        .filter((draft) => draft.tabId !== tabId);
+        .filter(
+          (draft) =>
+            draft.tabId !== tabId && draft.content !== documentPage.content,
+        );
       const candidates = [
         ...localCandidates,
         ...remoteCandidates.filter(
           (remote) =>
+            remote.content !== documentPage.content &&
             !localCandidates.some(
               (local) =>
                 local.tabId === remote.tabId &&
@@ -1029,9 +1178,47 @@ export function DocumentWorkspace({
   ]);
 
   const handleReloadAndDiscardDraft = useCallback(async () => {
+    const draft = draftRecordRef.current;
+    const storage = draftStorageRef.current;
+    if (draft && storage) {
+      const client = serverClientRef.current;
+      // A discarded edition must survive the choice and a browser restart.
+      // Server deletion archives the complete draft before removing it.
+      const saved = client ? await client.put(draft) : null;
+      if (saved && client) await client.remove(draft);
+      else {
+        const recoveryTab = `recovery-${getDraftRevision(draft.tabId)}`;
+        storage.write({
+          ...draft,
+          tabId: recoveryTab,
+          revision: getDraftRevision(recoveryTab),
+        });
+      }
+      if (draftRecordRef.current?.revision !== draft.revision)
+        throw new Error(
+          "Your edits changed while saving the recovery copy. Choose again to keep the latest edits safe.",
+        );
+    }
     await onReloadDocumentFromDisk();
     handleDiscardDraft();
   }, [handleDiscardDraft, onReloadDocumentFromDisk]);
+
+  const runDraftAction = async (action: () => void | Promise<void>) => {
+    if (draftActionPending) return;
+    setDraftActionPending(true);
+    setDraftActionError(null);
+    try {
+      await action();
+    } catch (error) {
+      setDraftActionError(
+        error instanceof Error
+          ? error.message
+          : "Could not save both copies. Your edits are still open.",
+      );
+    } finally {
+      setDraftActionPending(false);
+    }
+  };
 
   const handleOverwriteDocumentWithDraft = useCallback(async () => {
     // Capture the exact persisted revision that the explicit overwrite is
@@ -1096,8 +1283,8 @@ export function DocumentWorkspace({
       !!documentPage?.content &&
       criticMarkdownHasReviewRail(documentPage.content),
   );
-  const documentHeaderRef =
-    useReviewLayoutShiftAnimation<HTMLDivElement>(documentHasComments);
+  const [restoringRevision, setRestoringRevision] = useState(false);
+  const documentDirtyRef = useRef(false);
 
   useEffect(() => {
     setDocumentHasComments(
@@ -1108,16 +1295,40 @@ export function DocumentWorkspace({
 
   useEffect(() => {
     const documentIdentity = `${activeDocumentPath ?? ""}:${documentPage?.id ?? ""}`;
-    if (!documentIdentity) return;
-    documentChangeTrackingReadyRef.current = false;
-    setReviewHandoffState("idle");
-    setReviewHandoffPopoverOpen(false);
-    setDocumentChangedSinceOpen(false);
+    if (reviewHandoffDocumentIdentityRef.current !== documentIdentity) {
+      reviewHandoffDocumentIdentityRef.current = documentIdentity;
+      documentChangeTrackingReadyRef.current = false;
+      // Restore completion once on opening. Later save responses must not
+      // reset the ongoing review or overwrite a new local edit's state.
+      setReviewHandoffState(
+        documentPage?.reviewState === "completed" ? "completed" : "idle",
+      );
+      setReviewHandoffPopoverOpen(false);
+      setDocumentChangedSinceOpen(false);
+      setAutosaveDeadline(null);
+    }
     const readyTimer = window.setTimeout(() => {
       documentChangeTrackingReadyRef.current = true;
     }, 0);
     return () => window.clearTimeout(readyTimer);
-  }, [activeDocumentPath, documentPage?.id]);
+  }, [activeDocumentPath, documentPage?.id, documentPage?.reviewState]);
+
+  useEffect(() => {
+    if (previousReviewOpenRequestKeyRef.current === reviewOpenRequestKey)
+      return;
+    previousReviewOpenRequestKeyRef.current = reviewOpenRequestKey;
+    // The CLI can reuse this exact URL for the agent's next iteration.
+    // Reset the completed handoff without reloading or discarding local work.
+    setReviewHandoffState((current) =>
+      current === "notified" ||
+      current === "undelivered" ||
+      current === "completed"
+        ? "idle"
+        : current,
+    );
+    setReviewHandoffPopoverOpen(false);
+    setDocumentChangedSinceOpen(false);
+  }, [reviewOpenRequestKey]);
 
   useEffect(() => {
     if (!backend?.getReviewWatchStatus || !activeDocumentPath) {
@@ -1228,6 +1439,15 @@ export function DocumentWorkspace({
         if (flushResult && flushResult.status === "error") {
           throw flushResult.error;
         }
+        if (flushResult?.status === "blocked") {
+          throw new Error(
+            "Resolve the save conflict before finishing this iteration.",
+          );
+        }
+
+        // Finish queued recovery writes/removals before closing the iteration;
+        // a late draft acknowledgement must not put this review back in editing.
+        await serverClientRef.current?.list();
 
         const result = await onCompleteReview(options);
         if (result.delivered) {
@@ -1252,6 +1472,7 @@ export function DocumentWorkspace({
 
   const handleDocumentDirtyStateChange = useCallback(
     (isDirty: boolean) => {
+      documentDirtyRef.current = isDirty;
       if (
         shouldLatchDocumentChangedSinceOpen({
           isDirty,
@@ -1332,11 +1553,27 @@ export function DocumentWorkspace({
         : "clean";
   const serverDraftPending = serverDrafts.some(
     (draft) =>
-      draft.tabId !== draftTabIdRef.current ||
-      draft.revision !== draftRecordRef.current?.revision,
+      draft.content !== documentPage?.content &&
+      (draft.tabId !== draftTabIdRef.current ||
+        !ownedDraftRevisionsRef.current.has(draft.revision)),
   );
   const anyOtherDraftPending = otherTabDraftPending || serverDraftPending;
   const effectiveSaveState = draftStorageError ? "error" : saveState;
+  const hasUnsavedEdition =
+    effectiveSaveState !== "saved" || effectiveDiskChangeState !== "clean";
+  const saveDetail =
+    hasUnsavedEdition &&
+    (effectiveSaveState === "error" || effectiveDiskChangeState !== "clean")
+      ? draftStorageError
+        ? "Not saved. Keep this page open."
+        : draftRecordRef.current
+          ? mirroredDraftRevision === draftRecordRef.current.revision
+            ? "Document not saved; server recovery copy available."
+            : "Browser copy only; the agent cannot see these edits."
+          : "File changed elsewhere. Choose which text to keep."
+      : backend?.info.kind === "remote" && !hasUnsavedEdition
+        ? "Source file save confirmation is unavailable."
+        : undefined;
   const draftRecoveryNoticeVisible =
     draftIsSafeRecovered || draftHasDiskConflict;
   const hasTopNotice =
@@ -1359,7 +1596,9 @@ export function DocumentWorkspace({
       reviewWatcherCount > 0 ||
       reviewHandoffState !== "idle");
   const reviewHandoffFinished =
-    reviewHandoffState === "notified" || reviewHandoffState === "undelivered";
+    reviewHandoffState === "notified" ||
+    reviewHandoffState === "undelivered" ||
+    reviewHandoffState === "completed";
   const reviewHandoffButtonLabel = getReviewHandoffButtonLabel({
     reviewHandoffState,
     documentChangedSinceOpen,
@@ -1369,21 +1608,26 @@ export function DocumentWorkspace({
       ? Loader2
       : reviewHandoffState === "error"
         ? AlertTriangle
-        : reviewHandoffState === "undelivered"
+        : reviewHandoffState === "undelivered" ||
+            reviewHandoffState === "completed"
           ? Check
           : null;
   const reviewHandoffStatusTitle =
-    reviewHandoffState === "undelivered"
-      ? "Not sent, but saved"
-      : reviewHandoffState === "error"
-        ? "Could not notify agent"
-        : reviewCompleteTitle;
+    reviewHandoffState === "completed"
+      ? "Review completed"
+      : reviewHandoffState === "undelivered"
+        ? "Not sent, but saved"
+        : reviewHandoffState === "error"
+          ? "Could not notify agent"
+          : reviewCompleteTitle;
   const reviewHandoffStatusBody =
-    reviewHandoffState === "undelivered"
-      ? "Your comments and review are saved. No agent is waiting right now. Continue the original session when you’re ready; the agent can read this document and its review history."
-      : reviewHandoffState === "error"
-        ? "Roughdraft could not confirm the handoff. Check that the local server is running, then click Not sent to try again."
-        : null;
+    reviewHandoffState === "completed"
+      ? "This review is saved on the local server. The agent can read the document and its review history. Editing the document starts another review."
+      : reviewHandoffState === "undelivered"
+        ? "Your comments and review are saved. No agent is waiting right now. Continue the original session when you’re ready; the agent can read this document and its review history."
+        : reviewHandoffState === "error"
+          ? "Roughdraft could not confirm the handoff. Check that the local server is running, then click Not sent to try again."
+          : null;
   const reviewHandoffCopyMessage = buildReviewHandoffCopyMessage(
     activeDocumentPath ?? documentFilenameLabel,
   );
@@ -1393,9 +1637,39 @@ export function DocumentWorkspace({
     reviewHandoffState,
   });
   const reviewHandoffButtonDisabled =
-    reviewHandoffDisabled &&
-    !reviewHandoffFinished &&
-    !(reviewHandoffState === "error" && effectiveDiskChangeState === "clean");
+    restoringRevision ||
+    draftActionPending ||
+    (reviewHandoffDisabled &&
+      !reviewHandoffFinished &&
+      !(
+        reviewHandoffState === "error" && effectiveDiskChangeState === "clean"
+      ));
+  const restoreDisabledReason = restoringRevision
+    ? "Restoring version…"
+    : reviewHandoffState === "notifying" || draftActionPending
+      ? "Wait for the current save to finish."
+      : effectiveDiskChangeState !== "clean"
+        ? "Resolve the file conflict before restoring a version."
+        : effectiveSaveState !== "saved" || draftRecordRef.current
+          ? "Save your current edits before restoring a version."
+          : undefined;
+
+  const handleRestoreRevision = async (content: string) => {
+    if (!documentPage) throw new Error("No document is open.");
+    if (restoreDisabledReason || documentDirtyRef.current)
+      throw new Error(
+        restoreDisabledReason ??
+          "Save your current edits before restoring a version.",
+      );
+    setRestoringRevision(true);
+    try {
+      await handleSaveDocumentWithDraft(documentPage.id, content);
+      await onReloadDocumentFromDisk();
+    } finally {
+      setRestoringRevision(false);
+    }
+  };
+
   const trimmedOverallComment = overallComment.trim();
   const embedded =
     new URLSearchParams(window.location.search).get("embed") === "1";
@@ -1405,20 +1679,30 @@ export function DocumentWorkspace({
       data-testid="document-workspace"
       data-document-scroll-container="true"
       data-document-embed={embedded ? "true" : undefined}
+      data-document-has-comments={documentHasComments ? "true" : "false"}
       className={cn(
-        "min-h-0 flex-1 overflow-y-auto px-8 pb-8 sm:px-12",
+        "document-workspace min-h-0 flex-1 overflow-y-auto pb-8",
         embedded && "max-[640px]:mb-14",
-        hasTopNotice ? "pt-40 sm:pt-28" : embedded ? "pt-10" : "pt-16 sm:pt-10",
+        hasTopNotice ? "pt-64 sm:pt-44" : embedded ? "pt-10" : "pt-16 sm:pt-10",
       )}
     >
       <RemoteSessionBanner backend={backend} />
+      {draftActionError ? (
+        <div
+          data-testid="draft-action-error"
+          role="alert"
+          className="fixed top-12 left-1/2 z-[75] w-[min(calc(100vw-1rem),52rem)] -translate-x-1/2 rounded-md border border-red-300 bg-red-50 p-3 text-sm text-red-950"
+        >
+          {draftActionError}
+        </div>
+      ) : null}
       {anyOtherDraftPending &&
       !draftRecoveryNoticeVisible &&
       !draftStorageError ? (
         <div
           data-testid="draft-other-notice"
           role="status"
-          className="fixed top-3 left-1/2 z-[65] flex w-[min(calc(100vw-1rem),52rem)] -translate-x-1/2 flex-wrap items-center justify-between gap-3 rounded-lg border border-sky-300 bg-sky-50 p-4 text-sky-950 shadow-lg dark:border-sky-800 dark:bg-sky-950 dark:text-sky-100"
+          className="fixed top-24 left-1/2 z-[65] flex w-[min(calc(100vw-1rem),52rem)] -translate-x-1/2 flex-wrap items-center justify-between gap-3 rounded-lg border border-sky-300 bg-sky-50 p-4 text-sky-950 shadow-lg dark:border-sky-800 dark:bg-sky-950 dark:text-sky-100"
         >
           <p className="text-sm">
             {serverDraftPending
@@ -1452,7 +1736,7 @@ export function DocumentWorkspace({
         <div
           data-testid="draft-storage-error"
           role="alert"
-          className="fixed top-3 left-1/2 z-[70] flex w-[min(calc(100vw-1rem),52rem)] -translate-x-1/2 items-start gap-2.5 rounded-[8px] border border-red-300 bg-red-50 px-3 py-3 text-red-950 shadow-[0_14px_40px_rgba(127,29,29,0.18)] dark:border-red-800 dark:bg-red-950 dark:text-red-100"
+          className="fixed top-24 left-1/2 z-[70] flex w-[min(calc(100vw-1rem),52rem)] -translate-x-1/2 items-start gap-2.5 rounded-[8px] border border-red-300 bg-red-50 px-3 py-3 text-red-950 shadow-[0_14px_40px_rgba(127,29,29,0.18)] dark:border-red-800 dark:bg-red-950 dark:text-red-100"
         >
           <AlertTriangle
             className="mt-0.5 size-4 shrink-0"
@@ -1478,7 +1762,7 @@ export function DocumentWorkspace({
               ? "Recovered server draft"
               : "Recovered local draft"
           }
-          className="fixed top-3 left-1/2 z-[65] flex w-[min(calc(100vw-1rem),52rem)] -translate-x-1/2 flex-col gap-3 rounded-[8px] border border-sky-300 bg-sky-50 px-3 py-3 text-sky-950 shadow-[0_14px_40px_rgba(14,116,144,0.18)] dark:border-sky-800 dark:bg-sky-950 dark:text-sky-100 sm:flex-row sm:items-center sm:justify-between sm:px-4"
+          className="fixed top-24 left-1/2 z-[65] flex w-[min(calc(100vw-1rem),52rem)] -translate-x-1/2 flex-col gap-3 rounded-[8px] border border-sky-300 bg-sky-50 px-3 py-3 text-sky-950 shadow-[0_14px_40px_rgba(14,116,144,0.18)] dark:border-sky-800 dark:bg-sky-950 dark:text-sky-100 sm:flex-row sm:items-center sm:justify-between sm:px-4"
         >
           <div className="flex min-w-0 items-start gap-2.5">
             <RefreshCcw
@@ -1514,9 +1798,10 @@ export function DocumentWorkspace({
               variant="ghost"
               size="sm"
               className="h-8 rounded-[7px] bg-white/55 px-2 text-xs text-sky-950 hover:bg-white dark:bg-white/10 dark:text-sky-100 dark:hover:bg-white/20"
-              onClick={handleDiscardDraft}
+              disabled={draftActionPending}
+              onClick={() => void runDraftAction(handleReloadAndDiscardDraft)}
             >
-              Discard recovered draft
+              Use saved document
             </Button>
           </div>
         </div>
@@ -1527,7 +1812,7 @@ export function DocumentWorkspace({
           data-testid="draft-recovery-notice"
           role="status"
           aria-label="Local draft needs recovery"
-          className="fixed top-3 left-1/2 z-[65] flex w-[min(calc(100vw-1rem),52rem)] -translate-x-1/2 flex-col gap-3 rounded-[8px] border border-amber-300 bg-amber-50 px-3 py-3 text-amber-950 shadow-[0_14px_40px_rgba(120,53,15,0.18)] dark:border-amber-800 dark:bg-amber-950 dark:text-amber-100 sm:flex-row sm:items-center sm:justify-between sm:px-4"
+          className="fixed top-24 left-1/2 z-[65] flex w-[min(calc(100vw-1rem),52rem)] -translate-x-1/2 flex-col gap-3 rounded-[8px] border border-amber-300 bg-amber-50 px-3 py-3 text-amber-950 shadow-[0_14px_40px_rgba(120,53,15,0.18)] dark:border-amber-800 dark:bg-amber-950 dark:text-amber-100 sm:flex-row sm:items-center sm:justify-between sm:px-4"
         >
           <div className="flex min-w-0 items-start gap-2.5">
             <AlertTriangle
@@ -1536,11 +1821,11 @@ export function DocumentWorkspace({
             />
             <div className="min-w-0">
               <div className="text-sm font-semibold">
-                Disk version changed while a local draft was pending
+                File changed while you were editing
               </div>
               <div className="mt-0.5 text-xs leading-5 text-amber-900 dark:text-amber-200">
-                The current disk content is preserved. Review the local draft
-                before choosing recovery; autosave is paused until then.
+                Preview your edits, then choose which text to continue with. The
+                other copy stays available in History → Recovery points.
               </div>
             </div>
           </div>
@@ -1551,9 +1836,10 @@ export function DocumentWorkspace({
               variant="ghost"
               size="sm"
               className="h-8 rounded-[7px] bg-white/55 px-2 text-xs text-amber-950 hover:bg-white dark:bg-white/10 dark:text-amber-100 dark:hover:bg-white/20"
-              onClick={() => void handleReloadAndDiscardDraft()}
+              disabled={draftActionPending}
+              onClick={() => void runDraftAction(handleReloadAndDiscardDraft)}
             >
-              Keep disk version
+              Use file from disk
             </Button>
             {draftHasLocalRecovery ? (
               <Button
@@ -1561,10 +1847,13 @@ export function DocumentWorkspace({
                 data-testid="draft-recovery-overwrite"
                 size="sm"
                 className="h-8 rounded-[7px] bg-amber-900 px-2 text-xs text-white hover:bg-amber-800 dark:bg-amber-600 dark:hover:bg-amber-500"
-                onClick={() => void handleOverwriteDocumentWithDraft()}
+                disabled={draftActionPending}
+                onClick={() =>
+                  void runDraftAction(handleOverwriteDocumentWithDraft)
+                }
               >
                 <Upload className="size-3.5" />
-                Overwrite disk file
+                Use my edits
               </Button>
             ) : (
               <Button
@@ -1573,10 +1862,11 @@ export function DocumentWorkspace({
                 variant="ghost"
                 size="sm"
                 className="h-8 rounded-[7px] bg-white/55 px-2 text-xs text-amber-950 hover:bg-white dark:bg-white/10 dark:text-amber-100 dark:hover:bg-white/20"
+                disabled={draftActionPending}
                 onClick={handleRecoverChangedDraft}
               >
                 <RefreshCcw className="size-3.5" />
-                Recover local draft
+                Preview my edits
               </Button>
             )}
           </div>
@@ -1590,13 +1880,22 @@ export function DocumentWorkspace({
           <DocumentSaveStatusIndicator
             saveState={effectiveSaveState}
             diskChangeState={effectiveDiskChangeState}
+            autosaveDeadline={autosaveDeadline}
+            detail={saveDetail}
+            savedLabel={
+              backend?.info.kind === "remote"
+                ? "Sent to remote session"
+                : backend?.info.kind === "local-storage"
+                  ? "Saved in this browser"
+                  : undefined
+            }
           />
         </div>
       ) : null}
       <div
         className={cn(
           "fixed right-3 z-[60] flex max-w-[min(16rem,calc(100vw-1rem))] flex-col items-end gap-1.5",
-          hasTopNotice ? "top-[19rem] sm:top-[7rem]" : "top-3",
+          "top-3",
         )}
         data-testid="document-status-stack"
         data-document-status-stack="true"
@@ -1798,7 +2097,7 @@ export function DocumentWorkspace({
           data-testid="file-conflict-notice"
           role="status"
           aria-label="File conflict"
-          className="fixed top-3 left-1/2 z-50 flex w-[min(calc(100vw-1rem),52rem)] -translate-x-1/2 flex-col gap-3 rounded-[8px] border border-amber-300 dark:border-amber-700 bg-amber-50 dark:bg-amber-950 px-3 py-3 text-amber-950 dark:text-amber-100 shadow-[0_14px_40px_rgba(120,53,15,0.18)] dark:shadow-[0_14px_40px_rgba(0,0,0,0.4)] sm:flex-row sm:items-center sm:justify-between sm:px-4"
+          className="fixed top-24 left-1/2 z-50 flex w-[min(calc(100vw-1rem),52rem)] -translate-x-1/2 flex-col gap-3 rounded-[8px] border border-amber-300 dark:border-amber-700 bg-amber-50 dark:bg-amber-950 px-3 py-3 text-amber-950 dark:text-amber-100 shadow-[0_14px_40px_rgba(120,53,15,0.18)] dark:shadow-[0_14px_40px_rgba(0,0,0,0.4)] sm:flex-row sm:items-center sm:justify-between sm:px-4"
         >
           <div className="flex min-w-0 items-start gap-2.5">
             <AlertTriangle
@@ -1821,10 +2120,11 @@ export function DocumentWorkspace({
               variant="ghost"
               size="sm"
               className="h-8 rounded-[7px] bg-white/55 dark:bg-white/10 px-2 text-xs text-amber-950 dark:text-amber-100 hover:bg-white dark:hover:bg-white/20"
-              onClick={() => void handleReloadAndDiscardDraft()}
+              disabled={draftActionPending}
+              onClick={() => void runDraftAction(handleReloadAndDiscardDraft)}
             >
               <RefreshCcw className="size-3.5" />
-              Reload from disk
+              Use file from disk
             </Button>
             {documentDiskChangeState !== "paused" ? (
               <Button
@@ -1836,7 +2136,7 @@ export function DocumentWorkspace({
                 onClick={onKeepEditingWithoutAutosave}
               >
                 <PencilLine className="size-3.5" />
-                Keep editing with autosave paused
+                Decide later
               </Button>
             ) : null}
             <Button
@@ -1845,95 +2145,108 @@ export function DocumentWorkspace({
               variant="ghost"
               size="sm"
               className="h-8 rounded-[7px] bg-amber-900 dark:bg-amber-600 px-2 text-xs text-white hover:bg-amber-800 dark:hover:bg-amber-500"
-              onClick={() => void handleOverwriteDocumentWithDraft()}
+              disabled={draftActionPending}
+              onClick={() =>
+                void runDraftAction(handleOverwriteDocumentWithDraft)
+              }
             >
               <Upload className="size-3.5" />
-              Overwrite disk file
+              Use my edits
             </Button>
           </div>
         </div>
       ) : null}
-      <div className="mx-auto min-h-full max-w-[1232px]">
+      <div
+        className="mx-auto min-h-full max-w-[1552px]"
+        inert={reviewHandoffState === "notifying" || draftActionPending}
+        aria-busy={
+          reviewHandoffState === "notifying" || draftActionPending || undefined
+        }
+      >
         {documentPage ? (
           <div
-            ref={documentHeaderRef}
-            data-testid="document-page-header"
-            className={cn(
-              "review-layout-grid document-page-shell document-page-header mb-2 text-[0.62rem] font-medium tracking-[0.01em] text-stone-400",
-              !documentHasComments &&
-                "review-layout-grid--centered document-page-shell-no-comments",
-            )}
+            className="document-floating-rail"
+            data-testid="document-floating-rail"
           >
-            <div className="review-layout-main document-page-main w-full max-w-[56rem] min-w-0">
-              <div className="flex w-full flex-wrap items-center gap-1.5 px-1">
+            <div
+              className="document-floating-tools"
+              data-testid="document-floating-tools"
+              role="group"
+              aria-label="Document tools"
+            >
+              <div
+                data-testid="document-page-header"
+                className="document-tools-group"
+              >
                 <Tooltip>
                   <TooltipTrigger
                     render={
-                      <button
+                      <Button
                         type="button"
+                        variant="ghost"
+                        size="icon"
                         data-testid="document-editor-view-toggle"
-                        className="grid shrink-0 grid-cols-2 rounded-[999px] bg-[#E8E3DB] dark:bg-slate-800 px-[2px] pt-[3px] pb-[2px] shadow-[inset_0_1px_0_rgba(255,251,245,0.72)] dark:border-b dark:border-b-slate-800 dark:shadow-[inset_0_1px_0_rgba(255,255,255,0.08)]"
-                      >
-                        <span
-                          className={`flex w-[1.375rem] items-center justify-center rounded-full py-[2px] transition ${
+                        className="document-tool-button"
+                        aria-label={editorViewModeToggleLabel}
+                        onClick={() =>
+                          onDocumentEditorViewModeChange(
                             documentEditorViewMode === "rich-text"
-                              ? "bg-[#FFFDFC] dark:bg-slate-600 text-stone-700 dark:text-white shadow-[0_1px_2px_rgba(41,37,36,0.12)]"
-                              : "text-stone-500 dark:text-slate-400"
-                          }`}
-                        >
-                          <Eye className="size-[0.75rem]" />
-                        </span>
-                        <span
-                          className={`flex w-[1.375rem] items-center justify-center rounded-full py-[2px] transition ${
-                            documentEditorViewMode === "code"
-                              ? "bg-[#FFFDFC] dark:bg-slate-600 text-stone-700 dark:text-white shadow-[0_1px_2px_rgba(41,37,36,0.12)]"
-                              : "text-stone-500 dark:text-slate-400"
-                          }`}
-                        >
-                          <CodeXml className="size-[0.75rem]" />
-                        </span>
-                      </button>
-                    }
-                    aria-label={editorViewModeToggleLabel}
-                    onClick={() =>
-                      onDocumentEditorViewModeChange(
-                        documentEditorViewMode === "rich-text"
-                          ? "code"
-                          : "rich-text",
-                      )
+                              ? "code"
+                              : "rich-text",
+                          )
+                        }
+                      >
+                        {documentEditorViewMode === "rich-text" ? (
+                          <CodeXml />
+                        ) : (
+                          <Eye />
+                        )}
+                      </Button>
                     }
                   />
-                  <TooltipContent>{editorViewModeToggleLabel}</TooltipContent>
+                  <TooltipContent side="right">
+                    {documentEditorViewMode === "rich-text"
+                      ? "Switch to code view. Edit the Markdown source directly."
+                      : "Switch to rich text view. Edit formatted text and see version highlights."}
+                  </TooltipContent>
                 </Tooltip>
                 <Popover
                   open={fileCopyMenuOpen}
                   onOpenChange={setFileCopyMenuOpen}
                 >
-                  <PopoverTrigger
-                    render={
-                      <button
-                        type="button"
-                        data-testid="document-file-menu-trigger"
-                        className="inline-flex min-w-0 max-w-full items-center gap-1 rounded-full px-1 py-0.5 text-[0.8rem] font-medium tracking-[0.01em] text-stone-400 outline-none transition hover:text-stone-500 focus-visible:ring-2 focus-visible:ring-stone-300/70 dark:text-slate-400 dark:hover:text-slate-300 dark:focus-visible:ring-slate-600/70"
-                        title={documentFilenameLabel}
-                        aria-label="Document file actions"
-                      >
-                        <span className="min-w-0 truncate">
-                          {documentFilenameLabel}
-                        </span>
-                        <ChevronDown
-                          className="size-[0.62rem] shrink-0"
-                          aria-hidden="true"
+                  <Tooltip open={fileCopyMenuOpen ? false : undefined}>
+                    <TooltipTrigger
+                      render={
+                        <PopoverTrigger
+                          render={
+                            <Button
+                              type="button"
+                              variant="ghost"
+                              size="icon"
+                              data-testid="document-file-menu-trigger"
+                              className="document-tool-button"
+                              aria-label="Document file actions"
+                            >
+                              <FileText aria-hidden="true" />
+                              <span className="sr-only">
+                                {documentFilenameLabel}
+                              </span>
+                            </Button>
+                          }
                         />
-                      </button>
-                    }
-                  />
+                      }
+                    />
+                    <TooltipContent side="right">
+                      Copy the path, filename, Markdown, or rich text.
+                    </TooltipContent>
+                  </Tooltip>
                   <PopoverContent
                     aria-label="Document file actions"
                     data-testid="document-file-menu"
                     className="w-56 p-1"
                     align="start"
-                    sideOffset={4}
+                    side="right"
+                    sideOffset={12}
                   >
                     <div className="flex flex-col">
                       {fileCopyMenuOptions.map(({ action, label }) => (
@@ -1964,59 +2277,81 @@ export function DocumentWorkspace({
                     </div>
                   </PopoverContent>
                 </Popover>
-                <div className="ml-auto inline-flex h-[1.25rem] shrink-0 items-center">
-                  <Select<DocumentInteractionMode>
-                    value={documentInteractionMode}
-                    onValueChange={(value) => {
-                      if (value) setDocumentInteractionMode(value);
-                    }}
-                  >
-                    <SelectTrigger
-                      data-testid="document-mode-trigger"
-                      aria-label="Document mode"
-                      className="h-[1.5rem] gap-1.5 px-1 text-[0.8rem] leading-[1.25rem] font-medium tracking-[0.01em] text-stone-400 dark:text-slate-400 hover:text-stone-500 dark:hover:text-slate-300"
-                    >
-                      <ActiveDocumentInteractionModeIcon className="size-[0.8rem]" />
-                      <span className="truncate">
-                        {activeDocumentInteractionMode?.label}
-                      </span>
-                    </SelectTrigger>
-                    <SelectContent>
-                      {documentInteractionModeOptions.map(
-                        ({ value, label, Icon }) => (
-                          <SelectItem
-                            key={value}
-                            value={value}
-                            label={label}
-                            className="text-[0.8rem]"
-                          >
-                            <Icon className="size-3 text-stone-500 dark:text-slate-400" />
-                            <SelectItemText className="font-medium">
-                              {label}
-                            </SelectItemText>
-                          </SelectItem>
-                        ),
-                      )}
-                    </SelectContent>
-                  </Select>
-                </div>
+                <Select<DocumentInteractionMode>
+                  value={documentInteractionMode}
+                  onValueChange={(value) => {
+                    if (value) setDocumentInteractionMode(value);
+                  }}
+                >
+                  <Tooltip>
+                    <TooltipTrigger
+                      render={
+                        <SelectTrigger
+                          data-testid="document-mode-trigger"
+                          aria-label="Document mode"
+                          className="document-tool-button [&_[data-slot=select-icon]]:hidden"
+                        >
+                          <ActiveDocumentInteractionModeIcon
+                            className="size-4"
+                            aria-hidden="true"
+                          />
+                          <span className="sr-only">
+                            {activeDocumentInteractionMode?.label}
+                          </span>
+                        </SelectTrigger>
+                      }
+                    />
+                    <TooltipContent side="right">
+                      Choose how to work with this document. Editing changes
+                      text; Suggesting records proposals; Viewing prevents
+                      edits.
+                    </TooltipContent>
+                  </Tooltip>
+                  <SelectContent side="right" align="start">
+                    {documentInteractionModeOptions.map(
+                      ({ value, label, Icon }) => (
+                        <SelectItem
+                          key={value}
+                          value={value}
+                          label={label}
+                          data-testid={`document-mode-${value}`}
+                          className="text-[0.8rem]"
+                        >
+                          <Icon className="size-3 text-stone-500 dark:text-slate-400" />
+                          <SelectItemText className="font-medium">
+                            {label}
+                          </SelectItemText>
+                        </SelectItem>
+                      ),
+                    )}
+                  </SelectContent>
+                </Select>
               </div>
+              {documentPageForEditor &&
+              documentCopyPath &&
+              backend?.info.kind === "local-files" &&
+              backend.info.capabilities?.reviewRevisions === true ? (
+                <RevisionReview
+                  key={documentCopyPath}
+                  documentPath={documentCopyPath}
+                  markdown={documentPageForEditor.content}
+                  refreshKey={`${documentPage?.version ?? documentPage?.content ?? ""}:${documentDiskChangeState}:${reviewHandoffState}`}
+                  onRestore={handleRestoreRevision}
+                  restoreDisabledReason={restoreDisabledReason}
+                  editor={
+                    documentEditorViewMode === "rich-text"
+                      ? revisionEditor
+                      : null
+                  }
+                  legendContainer={revisionLegendContainer}
+                />
+              ) : null}
             </div>
+            <div
+              ref={setRevisionLegendContainer}
+              className="document-version-legend-host"
+            />
           </div>
-        ) : null}
-        {documentPageForEditor &&
-        documentCopyPath &&
-        backend?.info.kind === "local-files" &&
-        backend.info.capabilities?.reviewRevisions === true ? (
-          <RevisionReview
-            key={documentCopyPath}
-            documentPath={documentCopyPath}
-            markdown={documentPageForEditor.content}
-            refreshKey={`${documentPage?.version ?? documentPage?.content ?? ""}:${documentDiskChangeState}`}
-            editor={
-              documentEditorViewMode === "rich-text" ? revisionEditor : null
-            }
-          />
         ) : null}
         {documentPageForEditor ? (
           backend ? (
@@ -2027,8 +2362,15 @@ export function DocumentWorkspace({
               selected
               onSave={handleSaveDocumentWithDraft}
               onSaveStateChange={handleSaveStateChange}
+              onAutosaveDeadlineChange={setAutosaveDeadline}
               editorViewMode={documentEditorViewMode}
-              interactionMode={documentInteractionMode}
+              interactionMode={
+                restoringRevision ||
+                reviewHandoffState === "notifying" ||
+                draftActionPending
+                  ? "viewing"
+                  : documentInteractionMode
+              }
               backend={backend}
               onEditorReady={setRevisionEditor}
               onCommentRailPresenceChange={setDocumentHasComments}
@@ -2038,7 +2380,9 @@ export function DocumentWorkspace({
                 saveControllerRef.current = controller;
               }}
               saveBlocked={
-                documentDiskChangeState !== "clean" || draftBlocksSave
+                documentDiskChangeState !== "clean" ||
+                draftBlocksSave ||
+                restoringRevision
               }
               forceResetKey={documentForceResetKey}
               initiallyDirty={draftIsSafeRecovered || draftHasLocalRecovery}

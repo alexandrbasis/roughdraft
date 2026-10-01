@@ -2,9 +2,9 @@ import { afterEach, describe, expect, it, vi } from "vitest";
 import {
   createDraftRecord,
   createDraftStorage,
+  type DraftDocumentSnapshot,
   getDraftTabId,
   inspectDraftRecovery,
-  type DraftDocumentSnapshot,
 } from "./draft-storage";
 
 afterEach(() => {
@@ -97,6 +97,39 @@ describe("browser draft storage", () => {
       kind: "safe",
       draft,
     });
+  });
+
+  it("does not offer recovery when the saved Markdown exactly matches an older-base draft", () => {
+    const savedMarkdown = [
+      "# Reviewed copy",
+      "",
+      'Keep {==this point==}{>>Keep this discussion<<}{id="c1" by="user"}.',
+      "",
+    ].join("\n");
+    const draft = createDraftRecord({
+      storageKey: "/project/review.md",
+      content: savedMarkdown,
+      base: baseDocument,
+      revision: "tab-a:2",
+      tabId: "tab-a",
+    });
+
+    expect(
+      inspectDraftRecovery(draft, {
+        content: savedMarkdown,
+        version: "disk-v2",
+      }),
+    ).toEqual({ kind: "none" });
+
+    expect(
+      inspectDraftRecovery(draft, {
+        content: savedMarkdown.replace(
+          "Keep this discussion",
+          "Changed discussion",
+        ),
+        version: "disk-v2",
+      }),
+    ).toEqual({ kind: "disk-changed", draft });
   });
 
   it("preserves a newer tab draft when an older tab confirms its save", () => {
