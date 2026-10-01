@@ -14,7 +14,10 @@ import {
 } from "react";
 import { buildLocationForLinkedMarkdownDocument } from "./app-navigation";
 import { CommentAssetContext, CommentUploadContext } from "./CommentBody";
-import { CommentEditorList } from "./CommentEditorList";
+import {
+  CommentEditorList,
+  type CommentEditorState,
+} from "./CommentEditorList";
 import {
   type CriticChangeAttrs,
   type CriticComment,
@@ -34,6 +37,11 @@ import {
   getRootThreadIdForCommentId,
   parseCommentIds,
 } from "./document-comments";
+import {
+  type DocumentOutlineHeading,
+  getDocumentOutline,
+  type MarkdownCodeEditorNavigation,
+} from "./document-outline";
 import { EditorContextMenu } from "./EditorContextMenu";
 import {
   commentHighlightPluginKey,
@@ -83,6 +91,10 @@ interface PageCardProps {
   interactionMode?: DocumentInteractionMode;
   backend: StorageBackend;
   onEditorReady?: (editor: Editor | null) => void;
+  onCodeNavigationReady?: (
+    navigation: MarkdownCodeEditorNavigation | null,
+  ) => void;
+  onOutlineChange?: (headings: DocumentOutlineHeading[]) => void;
   onCommentRailPresenceChange?: (hasCommentRailSpace: boolean) => void;
   onDirtyStateChange?: (isDirty: boolean) => void;
   onLocalContentChange?: (markdown: string) => void;
@@ -105,6 +117,10 @@ interface PageCardEditorSurfaceProps {
   interactionMode: DocumentInteractionMode;
   backend: StorageBackend;
   onEditorReady?: (editor: Editor | null) => void;
+  onCodeNavigationReady?: (
+    navigation: MarkdownCodeEditorNavigation | null,
+  ) => void;
+  onOutlineChange?: (headings: DocumentOutlineHeading[]) => void;
   onCommentRailPresenceChange?: (hasCommentRailSpace: boolean) => void;
   onDirtyStateChange?: (isDirty: boolean) => void;
   onLocalContentChange?: (markdown: string) => void;
@@ -134,6 +150,7 @@ interface CodeEditorSurfaceProps {
   interactionMode: DocumentInteractionMode;
   layout: "default" | "embedded-demo";
   onMarkdownChange: (markdown: string) => void;
+  onNavigationReady?: (navigation: MarkdownCodeEditorNavigation | null) => void;
 }
 
 export interface DraftSuggestionState {
@@ -678,6 +695,32 @@ const RichTextEditorSurface = memo(function RichTextEditorSurface({
   const [comments, setComments] = useState<Map<string, CriticComment>>(
     () => parsedContent.comments,
   );
+  const [commentDrafts, setCommentDrafts] = useState<Record<string, string>>(
+    {},
+  );
+  const [editingCommentIds, setEditingCommentIds] = useState<string[]>([]);
+  const commentEditorState: CommentEditorState = {
+    drafts: commentDrafts,
+    setDrafts: setCommentDrafts,
+    editingCommentIds,
+    setEditingCommentIds,
+  };
+
+  useEffect(() => {
+    const validCommentIds = new Set(comments.keys());
+    setCommentDrafts((current) => {
+      const next = Object.fromEntries(
+        Object.entries(current).filter(([id]) => validCommentIds.has(id)),
+      );
+      return Object.keys(next).length === Object.keys(current).length
+        ? current
+        : next;
+    });
+    setEditingCommentIds((current) => {
+      const next = current.filter((id) => validCommentIds.has(id));
+      return next.length === current.length ? current : next;
+    });
+  }, [comments]);
   const frontmatterRef = useRef<string | null>(parsedContent.frontmatter);
   const endmatterRef = useRef<string | null>(parsedContent.endmatter);
 
@@ -1994,7 +2037,7 @@ const RichTextEditorSurface = memo(function RichTextEditorSurface({
     "document-comment-rail",
     reviewRailIsFlow
       ? "block px-4 pb-4 min-[900px]:p-0"
-      : "review-layout-rail hidden min-[1100px]:block",
+      : "review-layout-rail hidden min-[1440px]:block",
     dockEmbeddedRail && "document-comment-rail--docked",
   );
 
@@ -2059,6 +2102,7 @@ const RichTextEditorSurface = memo(function RichTextEditorSurface({
           </div>
         </div>
         <DocumentReviewRail
+          commentEditorState={commentEditorState}
           className={reviewRailClass}
           layout={reviewRailIsFlow ? "flow" : "anchored"}
           testId="document-review-rail"
@@ -2113,6 +2157,7 @@ const RichTextEditorSurface = memo(function RichTextEditorSurface({
         >
           <CommentEditorList
             comments={activeComments}
+            sharedState={commentEditorState}
             className="document-comment-dock-panel"
             testId="document-comment-fallback"
             selectedCommentId={selectedCommentId}
@@ -2147,6 +2192,7 @@ const CodeEditorSurface = memo(function CodeEditorSurface({
   interactionMode,
   layout,
   onMarkdownChange,
+  onNavigationReady,
 }: CodeEditorSurfaceProps) {
   const documentShellClass = cn(
     "document-page-shell",
@@ -2172,7 +2218,7 @@ const CodeEditorSurface = memo(function CodeEditorSurface({
     "document-comment-rail pointer-events-none invisible",
     layout === "embedded-demo"
       ? "block px-4 pb-4 min-[900px]:p-0"
-      : "review-layout-rail hidden min-[1100px]:block",
+      : "review-layout-rail hidden min-[1440px]:block",
   );
   const documentShellRef =
     useReviewLayoutShiftAnimation<HTMLDivElement>(hasCommentRailSpace);
@@ -2194,6 +2240,7 @@ const CodeEditorSurface = memo(function CodeEditorSurface({
                 testId="markdown-code-editor"
                 value={markdown}
                 onChange={onMarkdownChange}
+                onNavigationReady={onNavigationReady}
                 readOnly={interactionMode === "viewing"}
                 autoFocus
               />
@@ -2225,6 +2272,8 @@ const PageCardEditorSurface = memo(function PageCardEditorSurface({
   interactionMode,
   backend,
   onEditorReady,
+  onCodeNavigationReady,
+  onOutlineChange,
   onCommentRailPresenceChange,
   onDirtyStateChange,
   onLocalContentChange,
@@ -2251,6 +2300,10 @@ const PageCardEditorSurface = memo(function PageCardEditorSurface({
     page.content,
   );
   const [richTextSourceVersion, setRichTextSourceVersion] = useState(0);
+
+  useEffect(() => {
+    onOutlineChange?.(getDocumentOutline(markdown));
+  }, [markdown, onOutlineChange]);
 
   if (!saveQueueRef.current) {
     saveQueueRef.current = createSerializedSaveQueue({
@@ -2566,6 +2619,7 @@ const PageCardEditorSurface = memo(function PageCardEditorSurface({
         interactionMode={interactionMode}
         layout={layout}
         onMarkdownChange={handleMarkdownChange}
+        onNavigationReady={onCodeNavigationReady}
       />
     );
   }
@@ -2608,6 +2662,8 @@ export function PageCard({
   interactionMode = "editing",
   backend,
   onEditorReady,
+  onCodeNavigationReady,
+  onOutlineChange,
   onCommentRailPresenceChange,
   onDirtyStateChange,
   onLocalContentChange,
@@ -2640,6 +2696,8 @@ export function PageCard({
             interactionMode={interactionMode}
             backend={backend}
             onEditorReady={onEditorReady}
+            onCodeNavigationReady={onCodeNavigationReady}
+            onOutlineChange={onOutlineChange}
             onCommentRailPresenceChange={onCommentRailPresenceChange}
             onDirtyStateChange={onDirtyStateChange}
             onLocalContentChange={onLocalContentChange}

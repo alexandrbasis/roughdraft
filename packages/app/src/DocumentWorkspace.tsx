@@ -17,6 +17,7 @@ import {
 import { useCallback, useEffect, useMemo, useRef, useState } from "react";
 import type { DocumentEditorViewMode } from "./app-navigation";
 import { CommentComposer } from "./CommentComposer";
+import { DocumentOutline } from "./DocumentOutline";
 import { writeTextToClipboard } from "./clipboard";
 import { RemoteSessionBanner } from "./components/RemoteSessionBanner";
 import { Button } from "./components/ui/button";
@@ -55,6 +56,10 @@ import {
   type StoredDraft,
 } from "./draft-storage";
 import { cn } from "./lib/utils";
+import type {
+  DocumentOutlineHeading,
+  MarkdownCodeEditorNavigation,
+} from "./document-outline";
 import {
   type DocumentInteractionMode,
   type DocumentSaveController,
@@ -70,6 +75,7 @@ import {
   type ServerDraftClient,
 } from "./server-draft-client";
 import type { CompleteReviewOptions, Page, StorageBackend } from "./storage";
+import { useDocumentOutlineNavigation } from "./useDocumentOutlineNavigation";
 
 type DiskChangeState = "clean" | "changed" | "conflict" | "paused";
 type DraftRecoveryState =
@@ -542,6 +548,13 @@ export function DocumentWorkspace({
   const [saveState, setSaveState] = useState<DocumentSaveState>("saved");
   const [autosaveDeadline, setAutosaveDeadline] = useState<number | null>(null);
   const [revisionEditor, setRevisionEditor] = useState<Editor | null>(null);
+  const [outlineHeadings, setOutlineHeadings] = useState<
+    DocumentOutlineHeading[]
+  >([]);
+  const [codeNavigation, setCodeNavigation] =
+    useState<MarkdownCodeEditorNavigation | null>(null);
+  const [workspaceElement, setWorkspaceElement] =
+    useState<HTMLDivElement | null>(null);
   const [revisionLegendContainer, setRevisionLegendContainer] =
     useState<HTMLDivElement | null>(null);
   const [reviewHandoffState, setReviewHandoffState] =
@@ -1285,6 +1298,13 @@ export function DocumentWorkspace({
   );
   const [restoringRevision, setRestoringRevision] = useState(false);
   const documentDirtyRef = useRef(false);
+  const outline = useDocumentOutlineNavigation({
+    headings: outlineHeadings,
+    editor: revisionEditor,
+    sourceNavigation: codeNavigation,
+    sourceMode: documentEditorViewMode === "code",
+    workspace: workspaceElement,
+  });
 
   useEffect(() => {
     setDocumentHasComments(
@@ -1676,177 +1696,492 @@ export function DocumentWorkspace({
 
   return (
     <div
-      data-testid="document-workspace"
-      data-document-scroll-container="true"
+      className="document-workspace-shell min-h-0 flex-1"
+      data-testid="document-workspace-shell"
       data-document-embed={embedded ? "true" : undefined}
-      data-document-has-comments={documentHasComments ? "true" : "false"}
-      className={cn(
-        "document-workspace min-h-0 flex-1 overflow-y-auto pb-8",
-        embedded && "max-[640px]:mb-14",
-        hasTopNotice ? "pt-64 sm:pt-44" : embedded ? "pt-10" : "pt-16 sm:pt-10",
-      )}
     >
-      <RemoteSessionBanner backend={backend} />
-      {draftActionError ? (
-        <div
-          data-testid="draft-action-error"
-          role="alert"
-          className="fixed top-12 left-1/2 z-[75] w-[min(calc(100vw-1rem),52rem)] -translate-x-1/2 rounded-md border border-red-300 bg-red-50 p-3 text-sm text-red-950"
-        >
-          {draftActionError}
-        </div>
+      {documentPage ? (
+        <DocumentOutline
+          key={`${documentPage.id}:${activeDocumentPath ?? ""}`}
+          headings={outlineHeadings}
+          activeId={outline.activeId}
+          disabled={reviewHandoffState === "notifying" || draftActionPending}
+          onNavigate={outline.navigate}
+        />
       ) : null}
-      {anyOtherDraftPending &&
-      !draftRecoveryNoticeVisible &&
-      !draftStorageError ? (
-        <div
-          data-testid="draft-other-notice"
-          role="status"
-          className="fixed top-24 left-1/2 z-[65] flex w-[min(calc(100vw-1rem),52rem)] -translate-x-1/2 flex-wrap items-center justify-between gap-3 rounded-lg border border-sky-300 bg-sky-50 p-4 text-sky-950 shadow-lg dark:border-sky-800 dark:bg-sky-950 dark:text-sky-100"
-        >
-          <p className="text-sm">
-            {serverDraftPending
-              ? "A server draft is available from another browser or tab."
-              : "This browser has an unsaved draft from another tab."}{" "}
-            Save your current edits before recovering it.
-          </p>
-          <Button
-            data-testid="draft-recovery-other"
-            type="button"
-            size="sm"
-            disabled={!!draftRecordRef.current || saveState === "saving"}
-            onClick={handleRecoverOtherDraft}
+      <div
+        ref={setWorkspaceElement}
+        data-testid="document-workspace"
+        data-document-scroll-container="true"
+        data-document-embed={embedded ? "true" : undefined}
+        data-document-has-comments={documentHasComments ? "true" : "false"}
+        className={cn(
+          "document-workspace min-h-0 overflow-y-auto pb-8",
+          hasTopNotice ? "pt-64 sm:pt-44" : "pt-3",
+        )}
+      >
+        <RemoteSessionBanner backend={backend} />
+        {draftActionError ? (
+          <div
+            data-testid="draft-action-error"
+            role="alert"
+            className="fixed top-12 left-1/2 z-[75] w-[min(calc(100vw-1rem),52rem)] -translate-x-1/2 rounded-md border border-red-300 bg-red-50 p-3 text-sm text-red-950"
           >
-            {serverDraftPending
-              ? "Recover server draft"
-              : "Recover saved browser draft"}
-          </Button>
-        </div>
-      ) : null}
-      {serverDraftError && !draftStorageError ? (
-        <div
-          data-testid="server-draft-error"
-          role="alert"
-          className="relative z-[70] mb-4 rounded-lg border border-amber-300 bg-amber-50 p-3 text-sm text-amber-950 dark:border-amber-800 dark:bg-amber-950 dark:text-amber-100"
-        >
-          {serverDraftError}
-        </div>
-      ) : null}
-      {draftStorageError ? (
-        <div
-          data-testid="draft-storage-error"
-          role="alert"
-          className="fixed top-24 left-1/2 z-[70] flex w-[min(calc(100vw-1rem),52rem)] -translate-x-1/2 items-start gap-2.5 rounded-[8px] border border-red-300 bg-red-50 px-3 py-3 text-red-950 shadow-[0_14px_40px_rgba(127,29,29,0.18)] dark:border-red-800 dark:bg-red-950 dark:text-red-100"
-        >
-          <AlertTriangle
-            className="mt-0.5 size-4 shrink-0"
-            aria-hidden="true"
-          />
-          <div className="min-w-0">
-            <div className="text-sm font-semibold">
-              Draft recovery unavailable
-            </div>
-            <div className="mt-0.5 text-xs leading-5">
-              {draftStorageError.message} Roughdraft will keep showing the
-              current edits, but it cannot report them as durably saved.
-            </div>
+            {draftActionError}
           </div>
-        </div>
-      ) : null}
-      {draftRecoveryNoticeVisible && draftRecoveryState.kind === "safe" ? (
-        <div
-          data-testid="draft-recovery-notice"
-          role="status"
-          aria-label={
-            recoveredFromServer
-              ? "Recovered server draft"
-              : "Recovered local draft"
-          }
-          className="fixed top-24 left-1/2 z-[65] flex w-[min(calc(100vw-1rem),52rem)] -translate-x-1/2 flex-col gap-3 rounded-[8px] border border-sky-300 bg-sky-50 px-3 py-3 text-sky-950 shadow-[0_14px_40px_rgba(14,116,144,0.18)] dark:border-sky-800 dark:bg-sky-950 dark:text-sky-100 sm:flex-row sm:items-center sm:justify-between sm:px-4"
-        >
-          <div className="flex min-w-0 items-start gap-2.5">
-            <RefreshCcw
-              className="mt-0.5 size-4 shrink-0 text-sky-700 dark:text-sky-300"
-              aria-hidden="true"
-            />
-            <div className="min-w-0">
-              <div className="text-sm font-semibold">
-                {recoveredFromServer
-                  ? "Recovered server draft"
-                  : "Recovered local draft"}
-              </div>
-              <div className="mt-0.5 text-xs leading-5 text-sky-900 dark:text-sky-200">
-                Your edits were recovered after the last save failed. The
-                document is unsaved until Roughdraft confirms a new save.
-              </div>
-            </div>
-          </div>
-          <div className="flex shrink-0 flex-wrap items-center gap-1.5 sm:justify-end">
+        ) : null}
+        {anyOtherDraftPending &&
+        !draftRecoveryNoticeVisible &&
+        !draftStorageError ? (
+          <div
+            data-testid="draft-other-notice"
+            role="status"
+            className="fixed top-24 left-1/2 z-[65] flex w-[min(calc(100vw-1rem),52rem)] -translate-x-1/2 flex-wrap items-center justify-between gap-3 rounded-lg border border-sky-300 bg-sky-50 p-4 text-sky-950 shadow-lg dark:border-sky-800 dark:bg-sky-950 dark:text-sky-100"
+          >
+            <p className="text-sm">
+              {serverDraftPending
+                ? "A server draft is available from another browser or tab."
+                : "This browser has an unsaved draft from another tab."}{" "}
+              Save your current edits before recovering it.
+            </p>
             <Button
+              data-testid="draft-recovery-other"
               type="button"
-              data-testid="draft-recovery-save"
               size="sm"
-              className="h-8 rounded-[7px] bg-sky-900 px-2 text-xs text-white hover:bg-sky-800 dark:bg-sky-600 dark:hover:bg-sky-500"
-              onClick={() => void saveControllerRef.current?.flushSave()}
+              disabled={!!draftRecordRef.current || saveState === "saving"}
+              onClick={handleRecoverOtherDraft}
             >
-              <Check className="size-3.5" />
-              Save recovered draft
-            </Button>
-            <Button
-              type="button"
-              data-testid="draft-recovery-discard"
-              variant="ghost"
-              size="sm"
-              className="h-8 rounded-[7px] bg-white/55 px-2 text-xs text-sky-950 hover:bg-white dark:bg-white/10 dark:text-sky-100 dark:hover:bg-white/20"
-              disabled={draftActionPending}
-              onClick={() => void runDraftAction(handleReloadAndDiscardDraft)}
-            >
-              Use saved document
+              {serverDraftPending
+                ? "Recover server draft"
+                : "Recover saved browser draft"}
             </Button>
           </div>
-        </div>
-      ) : null}
-      {draftRecoveryNoticeVisible &&
-      draftRecoveryState.kind === "disk-changed" ? (
-        <div
-          data-testid="draft-recovery-notice"
-          role="status"
-          aria-label="Local draft needs recovery"
-          className="fixed top-24 left-1/2 z-[65] flex w-[min(calc(100vw-1rem),52rem)] -translate-x-1/2 flex-col gap-3 rounded-[8px] border border-amber-300 bg-amber-50 px-3 py-3 text-amber-950 shadow-[0_14px_40px_rgba(120,53,15,0.18)] dark:border-amber-800 dark:bg-amber-950 dark:text-amber-100 sm:flex-row sm:items-center sm:justify-between sm:px-4"
-        >
-          <div className="flex min-w-0 items-start gap-2.5">
+        ) : null}
+        {serverDraftError && !draftStorageError ? (
+          <div
+            data-testid="server-draft-error"
+            role="alert"
+            className="relative z-[70] mb-4 rounded-lg border border-amber-300 bg-amber-50 p-3 text-sm text-amber-950 dark:border-amber-800 dark:bg-amber-950 dark:text-amber-100"
+          >
+            {serverDraftError}
+          </div>
+        ) : null}
+        {draftStorageError ? (
+          <div
+            data-testid="draft-storage-error"
+            role="alert"
+            className="fixed top-24 left-1/2 z-[70] flex w-[min(calc(100vw-1rem),52rem)] -translate-x-1/2 items-start gap-2.5 rounded-[8px] border border-red-300 bg-red-50 px-3 py-3 text-red-950 shadow-[0_14px_40px_rgba(127,29,29,0.18)] dark:border-red-800 dark:bg-red-950 dark:text-red-100"
+          >
             <AlertTriangle
-              className="mt-0.5 size-4 shrink-0 text-amber-700 dark:text-amber-400"
+              className="mt-0.5 size-4 shrink-0"
               aria-hidden="true"
             />
             <div className="min-w-0">
               <div className="text-sm font-semibold">
-                File changed while you were editing
+                Draft recovery unavailable
               </div>
-              <div className="mt-0.5 text-xs leading-5 text-amber-900 dark:text-amber-200">
-                Preview your edits, then choose which text to continue with. The
-                other copy stays available in History → Recovery points.
+              <div className="mt-0.5 text-xs leading-5">
+                {draftStorageError.message} Roughdraft will keep showing the
+                current edits, but it cannot report them as durably saved.
               </div>
             </div>
           </div>
-          <div className="flex shrink-0 flex-wrap items-center gap-1.5 sm:justify-end">
-            <Button
-              type="button"
-              data-testid="draft-recovery-keep-disk"
-              variant="ghost"
-              size="sm"
-              className="h-8 rounded-[7px] bg-white/55 px-2 text-xs text-amber-950 hover:bg-white dark:bg-white/10 dark:text-amber-100 dark:hover:bg-white/20"
-              disabled={draftActionPending}
-              onClick={() => void runDraftAction(handleReloadAndDiscardDraft)}
-            >
-              Use file from disk
-            </Button>
-            {draftHasLocalRecovery ? (
+        ) : null}
+        {draftRecoveryNoticeVisible && draftRecoveryState.kind === "safe" ? (
+          <div
+            data-testid="draft-recovery-notice"
+            role="status"
+            aria-label={
+              recoveredFromServer
+                ? "Recovered server draft"
+                : "Recovered local draft"
+            }
+            className="fixed top-24 left-1/2 z-[65] flex w-[min(calc(100vw-1rem),52rem)] -translate-x-1/2 flex-col gap-3 rounded-[8px] border border-sky-300 bg-sky-50 px-3 py-3 text-sky-950 shadow-[0_14px_40px_rgba(14,116,144,0.18)] dark:border-sky-800 dark:bg-sky-950 dark:text-sky-100 sm:flex-row sm:items-center sm:justify-between sm:px-4"
+          >
+            <div className="flex min-w-0 items-start gap-2.5">
+              <RefreshCcw
+                className="mt-0.5 size-4 shrink-0 text-sky-700 dark:text-sky-300"
+                aria-hidden="true"
+              />
+              <div className="min-w-0">
+                <div className="text-sm font-semibold">
+                  {recoveredFromServer
+                    ? "Recovered server draft"
+                    : "Recovered local draft"}
+                </div>
+                <div className="mt-0.5 text-xs leading-5 text-sky-900 dark:text-sky-200">
+                  Your edits were recovered after the last save failed. The
+                  document is unsaved until Roughdraft confirms a new save.
+                </div>
+              </div>
+            </div>
+            <div className="flex shrink-0 flex-wrap items-center gap-1.5 sm:justify-end">
               <Button
                 type="button"
-                data-testid="draft-recovery-overwrite"
+                data-testid="draft-recovery-save"
                 size="sm"
-                className="h-8 rounded-[7px] bg-amber-900 px-2 text-xs text-white hover:bg-amber-800 dark:bg-amber-600 dark:hover:bg-amber-500"
+                className="h-8 rounded-[7px] bg-sky-900 px-2 text-xs text-white hover:bg-sky-800 dark:bg-sky-600 dark:hover:bg-sky-500"
+                onClick={() => void saveControllerRef.current?.flushSave()}
+              >
+                <Check className="size-3.5" />
+                Save recovered draft
+              </Button>
+              <Button
+                type="button"
+                data-testid="draft-recovery-discard"
+                variant="ghost"
+                size="sm"
+                className="h-8 rounded-[7px] bg-white/55 px-2 text-xs text-sky-950 hover:bg-white dark:bg-white/10 dark:text-sky-100 dark:hover:bg-white/20"
+                disabled={draftActionPending}
+                onClick={() => void runDraftAction(handleReloadAndDiscardDraft)}
+              >
+                Use saved document
+              </Button>
+            </div>
+          </div>
+        ) : null}
+        {draftRecoveryNoticeVisible &&
+        draftRecoveryState.kind === "disk-changed" ? (
+          <div
+            data-testid="draft-recovery-notice"
+            role="status"
+            aria-label="Local draft needs recovery"
+            className="fixed top-24 left-1/2 z-[65] flex w-[min(calc(100vw-1rem),52rem)] -translate-x-1/2 flex-col gap-3 rounded-[8px] border border-amber-300 bg-amber-50 px-3 py-3 text-amber-950 shadow-[0_14px_40px_rgba(120,53,15,0.18)] dark:border-amber-800 dark:bg-amber-950 dark:text-amber-100 sm:flex-row sm:items-center sm:justify-between sm:px-4"
+          >
+            <div className="flex min-w-0 items-start gap-2.5">
+              <AlertTriangle
+                className="mt-0.5 size-4 shrink-0 text-amber-700 dark:text-amber-400"
+                aria-hidden="true"
+              />
+              <div className="min-w-0">
+                <div className="text-sm font-semibold">
+                  File changed while you were editing
+                </div>
+                <div className="mt-0.5 text-xs leading-5 text-amber-900 dark:text-amber-200">
+                  Preview your edits, then choose which text to continue with.
+                  The other copy stays available in History → Recovery points.
+                </div>
+              </div>
+            </div>
+            <div className="flex shrink-0 flex-wrap items-center gap-1.5 sm:justify-end">
+              <Button
+                type="button"
+                data-testid="draft-recovery-keep-disk"
+                variant="ghost"
+                size="sm"
+                className="h-8 rounded-[7px] bg-white/55 px-2 text-xs text-amber-950 hover:bg-white dark:bg-white/10 dark:text-amber-100 dark:hover:bg-white/20"
+                disabled={draftActionPending}
+                onClick={() => void runDraftAction(handleReloadAndDiscardDraft)}
+              >
+                Use file from disk
+              </Button>
+              {draftHasLocalRecovery ? (
+                <Button
+                  type="button"
+                  data-testid="draft-recovery-overwrite"
+                  size="sm"
+                  className="h-8 rounded-[7px] bg-amber-900 px-2 text-xs text-white hover:bg-amber-800 dark:bg-amber-600 dark:hover:bg-amber-500"
+                  disabled={draftActionPending}
+                  onClick={() =>
+                    void runDraftAction(handleOverwriteDocumentWithDraft)
+                  }
+                >
+                  <Upload className="size-3.5" />
+                  Use my edits
+                </Button>
+              ) : (
+                <Button
+                  type="button"
+                  data-testid="draft-recovery-recover-local"
+                  variant="ghost"
+                  size="sm"
+                  className="h-8 rounded-[7px] bg-white/55 px-2 text-xs text-amber-950 hover:bg-white dark:bg-white/10 dark:text-amber-100 dark:hover:bg-white/20"
+                  disabled={draftActionPending}
+                  onClick={handleRecoverChangedDraft}
+                >
+                  <RefreshCcw className="size-3.5" />
+                  Preview my edits
+                </Button>
+              )}
+            </div>
+          </div>
+        ) : null}
+        {documentPage ? (
+          <div
+            className="fixed top-3 left-3 z-[60]"
+            data-testid="document-save-status-corner"
+          >
+            <DocumentSaveStatusIndicator
+              saveState={effectiveSaveState}
+              diskChangeState={effectiveDiskChangeState}
+              autosaveDeadline={autosaveDeadline}
+              detail={saveDetail}
+              savedLabel={
+                backend?.info.kind === "remote"
+                  ? "Sent to remote session"
+                  : backend?.info.kind === "local-storage"
+                    ? "Saved in this browser"
+                    : undefined
+              }
+            />
+          </div>
+        ) : null}
+        <div
+          className={cn(
+            "fixed right-3 z-[60] flex max-w-[min(16rem,calc(100vw-1rem))] flex-col items-end gap-1.5",
+            "top-3",
+          )}
+          data-testid="document-status-stack"
+          data-document-status-stack="true"
+        >
+          <div className="flex max-w-full items-center justify-end gap-1.5">
+            {showReviewHandoffButton ? (
+              <Popover
+                open={reviewHandoffPopoverOpen}
+                onOpenChange={(open) => {
+                  if (!overallCommentUploading)
+                    setReviewHandoffPopoverOpen(open);
+                }}
+              >
+                <div
+                  data-testid="review-handoff-split-button"
+                  className={cn(
+                    "relative flex items-center overflow-hidden rounded-[7px] shadow-[0_10px_28px_rgba(0,0,0,0.18)] transition-opacity after:pointer-events-none after:absolute after:top-px after:right-8 after:bottom-px after:z-10 after:w-px after:bg-[#4a4038] after:content-[''] dark:after:bg-slate-600",
+                    reviewHandoffDisabled &&
+                      reviewHandoffState !== "undelivered" &&
+                      reviewHandoffState !== "error" &&
+                      "opacity-50",
+                  )}
+                >
+                  <Button
+                    type="button"
+                    data-testid="review-handoff-button"
+                    size="lg"
+                    className="h-9 rounded-r-none rounded-l-[7px] border-0 bg-[#2B2420] px-3 text-sm font-bold text-white hover:bg-[#3a322b] focus-visible:ring-slate-300 disabled:opacity-100 dark:bg-slate-700 dark:text-slate-100 dark:hover:bg-slate-600 dark:focus-visible:ring-slate-600"
+                    disabled={
+                      reviewHandoffButtonDisabled || overallCommentUploading
+                    }
+                    aria-disabled={reviewHandoffButtonDisabled || undefined}
+                    onClick={() => {
+                      if (reviewHandoffFinished) {
+                        setReviewHandoffPopoverOpen(true);
+                        return;
+                      }
+
+                      void handleCompleteReview(
+                        trimmedOverallComment
+                          ? { overallComment: trimmedOverallComment }
+                          : undefined,
+                      );
+                    }}
+                  >
+                    {ReviewHandoffButtonIcon ? (
+                      <ReviewHandoffButtonIcon
+                        className={cn(
+                          "size-4",
+                          reviewHandoffState === "notifying" && "animate-spin",
+                        )}
+                      />
+                    ) : null}
+                    {reviewHandoffButtonLabel}
+                  </Button>
+                  <PopoverTrigger
+                    render={
+                      <Button
+                        type="button"
+                        data-testid="review-handoff-comment-trigger"
+                        size="icon-lg"
+                        className="h-9 w-8 rounded-l-none rounded-r-[7px] border-0 bg-[#2B2420] text-white hover:bg-[#3a322b] focus-visible:ring-slate-300 disabled:opacity-100 dark:bg-slate-700 dark:text-slate-100 dark:hover:bg-slate-600 dark:focus-visible:ring-slate-600"
+                        disabled={reviewHandoffDisabled}
+                        aria-label="Add overall handoff comment"
+                      >
+                        <ChevronDown className="size-4" />
+                      </Button>
+                    }
+                  />
+                </div>
+                <PopoverContent
+                  className={
+                    reviewHandoffState === "notified" ? "pt-0" : undefined
+                  }
+                  aria-label={
+                    reviewHandoffState === "idle"
+                      ? "Review handoff comment"
+                      : "Review handoff status"
+                  }
+                  data-testid={
+                    reviewHandoffState === "idle"
+                      ? "review-handoff-comment-popover"
+                      : "review-handoff-status"
+                  }
+                >
+                  {reviewHandoffState === "idle" ? (
+                    <form
+                      className="space-y-3"
+                      onSubmit={(event) => {
+                        event.preventDefault();
+                        if (overallCommentUploading) return;
+                        void handleCompleteReview({
+                          overallComment: trimmedOverallComment,
+                        });
+                      }}
+                    >
+                      <div>
+                        <CommentComposer
+                          id="review-handoff-overall-comment"
+                          data-testid="review-handoff-overall-comment"
+                          aria-label="Overall comment"
+                          placeholder="Overall comment"
+                          value={overallComment}
+                          backend={backend}
+                          onUploadingChange={setOverallCommentUploading}
+                          onChange={setOverallComment}
+                          maxLength={4000}
+                          rows={4}
+                          className="min-h-24 resize-none"
+                        />
+                      </div>
+                      <Button
+                        type="submit"
+                        data-testid="review-handoff-submit-comment"
+                        size="lg"
+                        className="w-full rounded-[7px] bg-black text-sm font-bold text-white hover:bg-black/85 focus-visible:ring-black/25 dark:bg-white dark:text-black dark:hover:bg-white/90"
+                        disabled={
+                          !trimmedOverallComment || overallCommentUploading
+                        }
+                      >
+                        <CheckCheck className="size-4" />
+                        Submit with comment
+                      </Button>
+                    </form>
+                  ) : (
+                    <div>
+                      {reviewHandoffState === "notified" ? (
+                        <div className="mb-3 flex h-[170px] items-center justify-center overflow-hidden">
+                          <RobotsHighFiveToy
+                            onHighFive={() =>
+                              setReviewCompleteTitle((currentTitle) =>
+                                getRandomReviewCompleteTitleExcept(
+                                  currentTitle,
+                                ),
+                              )
+                            }
+                          />
+                        </div>
+                      ) : null}
+                      <div className="flex items-start gap-3">
+                        {reviewHandoffState === "notifying" ||
+                        reviewHandoffState === "error" ? (
+                          <span className="mt-0.5 flex size-7 shrink-0 items-center justify-center rounded-full bg-black text-white dark:bg-white dark:text-black">
+                            {reviewHandoffState === "notifying" ? (
+                              <Loader2 className="size-4 animate-spin" />
+                            ) : (
+                              <AlertTriangle className="size-4" />
+                            )}
+                          </span>
+                        ) : null}
+                        <div>
+                          <div className="text-xl font-semibold leading-6 text-stone-950 dark:text-slate-50">
+                            {reviewHandoffStatusTitle}
+                          </div>
+                          {reviewHandoffStatusBody ? (
+                            <p className="mt-1 text-sm leading-6 text-stone-600 dark:text-slate-300">
+                              {reviewHandoffStatusBody}
+                            </p>
+                          ) : (
+                            <div className="mt-1">
+                              <p className="text-sm leading-[1.32rem] text-stone-500 dark:text-slate-400">
+                                Your agent is now working in the background on
+                                this, in all likelihood. If our signal didn't
+                                make it, just{" "}
+                                <button
+                                  type="button"
+                                  data-testid="review-handoff-copy-message"
+                                  className="font-normal text-inherit underline decoration-stone-300 underline-offset-4 hover:decoration-stone-700 focus-visible:outline-none focus-visible:ring-2 focus-visible:ring-stone-950/25 dark:decoration-slate-600 dark:hover:decoration-slate-200 dark:focus-visible:ring-slate-50/30"
+                                  onClick={() =>
+                                    void writePlainTextToClipboard(
+                                      reviewHandoffCopyMessage,
+                                    )
+                                  }
+                                >
+                                  click here
+                                </button>{" "}
+                                to copy a line you can send it to keep going.
+                              </p>
+                              <Button
+                                type="button"
+                                data-testid="review-handoff-close-window"
+                                size="lg"
+                                variant="outline"
+                                className="mt-4 w-full rounded-[7px] text-sm font-semibold"
+                                onClick={() => window.close()}
+                              >
+                                Close window
+                              </Button>
+                            </div>
+                          )}
+                        </div>
+                      </div>
+                    </div>
+                  )}
+                </PopoverContent>
+              </Popover>
+            ) : null}
+          </div>
+        </div>
+        {conflictNotice ? (
+          <div
+            data-testid="file-conflict-notice"
+            role="status"
+            aria-label="File conflict"
+            className="fixed top-24 left-1/2 z-50 flex w-[min(calc(100vw-1rem),52rem)] -translate-x-1/2 flex-col gap-3 rounded-[8px] border border-amber-300 dark:border-amber-700 bg-amber-50 dark:bg-amber-950 px-3 py-3 text-amber-950 dark:text-amber-100 shadow-[0_14px_40px_rgba(120,53,15,0.18)] dark:shadow-[0_14px_40px_rgba(0,0,0,0.4)] sm:flex-row sm:items-center sm:justify-between sm:px-4"
+          >
+            <div className="flex min-w-0 items-start gap-2.5">
+              <AlertTriangle
+                className="mt-0.5 size-4 shrink-0 text-amber-700 dark:text-amber-400"
+                aria-hidden="true"
+              />
+              <div className="min-w-0">
+                <div className="text-sm font-semibold leading-5">
+                  {conflictNotice.title}
+                </div>
+                <div className="mt-0.5 text-xs leading-5 text-amber-900 dark:text-amber-200">
+                  {conflictNotice.body}
+                </div>
+              </div>
+            </div>
+            <div className="flex shrink-0 flex-wrap items-center gap-1.5 sm:justify-end">
+              <Button
+                type="button"
+                data-testid="file-conflict-action-reload"
+                variant="ghost"
+                size="sm"
+                className="h-8 rounded-[7px] bg-white/55 dark:bg-white/10 px-2 text-xs text-amber-950 dark:text-amber-100 hover:bg-white dark:hover:bg-white/20"
+                disabled={draftActionPending}
+                onClick={() => void runDraftAction(handleReloadAndDiscardDraft)}
+              >
+                <RefreshCcw className="size-3.5" />
+                Use file from disk
+              </Button>
+              {documentDiskChangeState !== "paused" ? (
+                <Button
+                  type="button"
+                  data-testid="file-conflict-action-keep-editing"
+                  variant="ghost"
+                  size="sm"
+                  className="h-8 rounded-[7px] bg-white/55 dark:bg-white/10 px-2 text-xs text-amber-950 dark:text-amber-100 hover:bg-white dark:hover:bg-white/20"
+                  onClick={onKeepEditingWithoutAutosave}
+                >
+                  <PencilLine className="size-3.5" />
+                  Decide later
+                </Button>
+              ) : null}
+              <Button
+                type="button"
+                data-testid="file-conflict-action-overwrite"
+                variant="ghost"
+                size="sm"
+                className="h-8 rounded-[7px] bg-amber-900 dark:bg-amber-600 px-2 text-xs text-white hover:bg-amber-800 dark:hover:bg-amber-500"
                 disabled={draftActionPending}
                 onClick={() =>
                   void runDraftAction(handleOverwriteDocumentWithDraft)
@@ -1855,544 +2190,255 @@ export function DocumentWorkspace({
                 <Upload className="size-3.5" />
                 Use my edits
               </Button>
-            ) : (
-              <Button
-                type="button"
-                data-testid="draft-recovery-recover-local"
-                variant="ghost"
-                size="sm"
-                className="h-8 rounded-[7px] bg-white/55 px-2 text-xs text-amber-950 hover:bg-white dark:bg-white/10 dark:text-amber-100 dark:hover:bg-white/20"
-                disabled={draftActionPending}
-                onClick={handleRecoverChangedDraft}
-              >
-                <RefreshCcw className="size-3.5" />
-                Preview my edits
-              </Button>
-            )}
-          </div>
-        </div>
-      ) : null}
-      {documentPage ? (
-        <div
-          className="fixed top-3 left-3 z-[60]"
-          data-testid="document-save-status-corner"
-        >
-          <DocumentSaveStatusIndicator
-            saveState={effectiveSaveState}
-            diskChangeState={effectiveDiskChangeState}
-            autosaveDeadline={autosaveDeadline}
-            detail={saveDetail}
-            savedLabel={
-              backend?.info.kind === "remote"
-                ? "Sent to remote session"
-                : backend?.info.kind === "local-storage"
-                  ? "Saved in this browser"
-                  : undefined
-            }
-          />
-        </div>
-      ) : null}
-      <div
-        className={cn(
-          "fixed right-3 z-[60] flex max-w-[min(16rem,calc(100vw-1rem))] flex-col items-end gap-1.5",
-          "top-3",
-        )}
-        data-testid="document-status-stack"
-        data-document-status-stack="true"
-      >
-        <div className="flex max-w-full items-center justify-end gap-1.5">
-          {showReviewHandoffButton ? (
-            <Popover
-              open={reviewHandoffPopoverOpen}
-              onOpenChange={(open) => {
-                if (!overallCommentUploading) setReviewHandoffPopoverOpen(open);
-              }}
-            >
-              <div
-                data-testid="review-handoff-split-button"
-                className={cn(
-                  "relative flex items-center overflow-hidden rounded-[7px] shadow-[0_10px_28px_rgba(0,0,0,0.18)] transition-opacity after:pointer-events-none after:absolute after:top-px after:right-8 after:bottom-px after:z-10 after:w-px after:bg-[#4a4038] after:content-[''] dark:after:bg-slate-600",
-                  reviewHandoffDisabled &&
-                    reviewHandoffState !== "undelivered" &&
-                    reviewHandoffState !== "error" &&
-                    "opacity-50",
-                )}
-              >
-                <Button
-                  type="button"
-                  data-testid="review-handoff-button"
-                  size="lg"
-                  className="h-9 rounded-r-none rounded-l-[7px] border-0 bg-[#2B2420] px-3 text-sm font-bold text-white hover:bg-[#3a322b] focus-visible:ring-slate-300 disabled:opacity-100 dark:bg-slate-700 dark:text-slate-100 dark:hover:bg-slate-600 dark:focus-visible:ring-slate-600"
-                  disabled={
-                    reviewHandoffButtonDisabled || overallCommentUploading
-                  }
-                  aria-disabled={reviewHandoffButtonDisabled || undefined}
-                  onClick={() => {
-                    if (reviewHandoffFinished) {
-                      setReviewHandoffPopoverOpen(true);
-                      return;
-                    }
-
-                    void handleCompleteReview(
-                      trimmedOverallComment
-                        ? { overallComment: trimmedOverallComment }
-                        : undefined,
-                    );
-                  }}
-                >
-                  {ReviewHandoffButtonIcon ? (
-                    <ReviewHandoffButtonIcon
-                      className={cn(
-                        "size-4",
-                        reviewHandoffState === "notifying" && "animate-spin",
-                      )}
-                    />
-                  ) : null}
-                  {reviewHandoffButtonLabel}
-                </Button>
-                <PopoverTrigger
-                  render={
-                    <Button
-                      type="button"
-                      data-testid="review-handoff-comment-trigger"
-                      size="icon-lg"
-                      className="h-9 w-8 rounded-l-none rounded-r-[7px] border-0 bg-[#2B2420] text-white hover:bg-[#3a322b] focus-visible:ring-slate-300 disabled:opacity-100 dark:bg-slate-700 dark:text-slate-100 dark:hover:bg-slate-600 dark:focus-visible:ring-slate-600"
-                      disabled={reviewHandoffDisabled}
-                      aria-label="Add overall handoff comment"
-                    >
-                      <ChevronDown className="size-4" />
-                    </Button>
-                  }
-                />
-              </div>
-              <PopoverContent
-                className={
-                  reviewHandoffState === "notified" ? "pt-0" : undefined
-                }
-                aria-label={
-                  reviewHandoffState === "idle"
-                    ? "Review handoff comment"
-                    : "Review handoff status"
-                }
-                data-testid={
-                  reviewHandoffState === "idle"
-                    ? "review-handoff-comment-popover"
-                    : "review-handoff-status"
-                }
-              >
-                {reviewHandoffState === "idle" ? (
-                  <form
-                    className="space-y-3"
-                    onSubmit={(event) => {
-                      event.preventDefault();
-                      if (overallCommentUploading) return;
-                      void handleCompleteReview({
-                        overallComment: trimmedOverallComment,
-                      });
-                    }}
-                  >
-                    <div>
-                      <CommentComposer
-                        id="review-handoff-overall-comment"
-                        data-testid="review-handoff-overall-comment"
-                        aria-label="Overall comment"
-                        placeholder="Overall comment"
-                        value={overallComment}
-                        backend={backend}
-                        onUploadingChange={setOverallCommentUploading}
-                        onChange={setOverallComment}
-                        maxLength={4000}
-                        rows={4}
-                        className="min-h-24 resize-none"
-                      />
-                    </div>
-                    <Button
-                      type="submit"
-                      data-testid="review-handoff-submit-comment"
-                      size="lg"
-                      className="w-full rounded-[7px] bg-black text-sm font-bold text-white hover:bg-black/85 focus-visible:ring-black/25 dark:bg-white dark:text-black dark:hover:bg-white/90"
-                      disabled={
-                        !trimmedOverallComment || overallCommentUploading
-                      }
-                    >
-                      <CheckCheck className="size-4" />
-                      Submit with comment
-                    </Button>
-                  </form>
-                ) : (
-                  <div>
-                    {reviewHandoffState === "notified" ? (
-                      <div className="mb-3 flex h-[170px] items-center justify-center overflow-hidden">
-                        <RobotsHighFiveToy
-                          onHighFive={() =>
-                            setReviewCompleteTitle((currentTitle) =>
-                              getRandomReviewCompleteTitleExcept(currentTitle),
-                            )
-                          }
-                        />
-                      </div>
-                    ) : null}
-                    <div className="flex items-start gap-3">
-                      {reviewHandoffState === "notifying" ||
-                      reviewHandoffState === "error" ? (
-                        <span className="mt-0.5 flex size-7 shrink-0 items-center justify-center rounded-full bg-black text-white dark:bg-white dark:text-black">
-                          {reviewHandoffState === "notifying" ? (
-                            <Loader2 className="size-4 animate-spin" />
-                          ) : (
-                            <AlertTriangle className="size-4" />
-                          )}
-                        </span>
-                      ) : null}
-                      <div>
-                        <div className="text-xl font-semibold leading-6 text-stone-950 dark:text-slate-50">
-                          {reviewHandoffStatusTitle}
-                        </div>
-                        {reviewHandoffStatusBody ? (
-                          <p className="mt-1 text-sm leading-6 text-stone-600 dark:text-slate-300">
-                            {reviewHandoffStatusBody}
-                          </p>
-                        ) : (
-                          <div className="mt-1">
-                            <p className="text-sm leading-[1.32rem] text-stone-500 dark:text-slate-400">
-                              Your agent is now working in the background on
-                              this, in all likelihood. If our signal didn't make
-                              it, just{" "}
-                              <button
-                                type="button"
-                                data-testid="review-handoff-copy-message"
-                                className="font-normal text-inherit underline decoration-stone-300 underline-offset-4 hover:decoration-stone-700 focus-visible:outline-none focus-visible:ring-2 focus-visible:ring-stone-950/25 dark:decoration-slate-600 dark:hover:decoration-slate-200 dark:focus-visible:ring-slate-50/30"
-                                onClick={() =>
-                                  void writePlainTextToClipboard(
-                                    reviewHandoffCopyMessage,
-                                  )
-                                }
-                              >
-                                click here
-                              </button>{" "}
-                              to copy a line you can send it to keep going.
-                            </p>
-                            <Button
-                              type="button"
-                              data-testid="review-handoff-close-window"
-                              size="lg"
-                              variant="outline"
-                              className="mt-4 w-full rounded-[7px] text-sm font-semibold"
-                              onClick={() => window.close()}
-                            >
-                              Close window
-                            </Button>
-                          </div>
-                        )}
-                      </div>
-                    </div>
-                  </div>
-                )}
-              </PopoverContent>
-            </Popover>
-          ) : null}
-        </div>
-      </div>
-      {conflictNotice ? (
-        <div
-          data-testid="file-conflict-notice"
-          role="status"
-          aria-label="File conflict"
-          className="fixed top-24 left-1/2 z-50 flex w-[min(calc(100vw-1rem),52rem)] -translate-x-1/2 flex-col gap-3 rounded-[8px] border border-amber-300 dark:border-amber-700 bg-amber-50 dark:bg-amber-950 px-3 py-3 text-amber-950 dark:text-amber-100 shadow-[0_14px_40px_rgba(120,53,15,0.18)] dark:shadow-[0_14px_40px_rgba(0,0,0,0.4)] sm:flex-row sm:items-center sm:justify-between sm:px-4"
-        >
-          <div className="flex min-w-0 items-start gap-2.5">
-            <AlertTriangle
-              className="mt-0.5 size-4 shrink-0 text-amber-700 dark:text-amber-400"
-              aria-hidden="true"
-            />
-            <div className="min-w-0">
-              <div className="text-sm font-semibold leading-5">
-                {conflictNotice.title}
-              </div>
-              <div className="mt-0.5 text-xs leading-5 text-amber-900 dark:text-amber-200">
-                {conflictNotice.body}
-              </div>
             </div>
           </div>
-          <div className="flex shrink-0 flex-wrap items-center gap-1.5 sm:justify-end">
-            <Button
-              type="button"
-              data-testid="file-conflict-action-reload"
-              variant="ghost"
-              size="sm"
-              className="h-8 rounded-[7px] bg-white/55 dark:bg-white/10 px-2 text-xs text-amber-950 dark:text-amber-100 hover:bg-white dark:hover:bg-white/20"
-              disabled={draftActionPending}
-              onClick={() => void runDraftAction(handleReloadAndDiscardDraft)}
-            >
-              <RefreshCcw className="size-3.5" />
-              Use file from disk
-            </Button>
-            {documentDiskChangeState !== "paused" ? (
-              <Button
-                type="button"
-                data-testid="file-conflict-action-keep-editing"
-                variant="ghost"
-                size="sm"
-                className="h-8 rounded-[7px] bg-white/55 dark:bg-white/10 px-2 text-xs text-amber-950 dark:text-amber-100 hover:bg-white dark:hover:bg-white/20"
-                onClick={onKeepEditingWithoutAutosave}
-              >
-                <PencilLine className="size-3.5" />
-                Decide later
-              </Button>
-            ) : null}
-            <Button
-              type="button"
-              data-testid="file-conflict-action-overwrite"
-              variant="ghost"
-              size="sm"
-              className="h-8 rounded-[7px] bg-amber-900 dark:bg-amber-600 px-2 text-xs text-white hover:bg-amber-800 dark:hover:bg-amber-500"
-              disabled={draftActionPending}
-              onClick={() =>
-                void runDraftAction(handleOverwriteDocumentWithDraft)
-              }
-            >
-              <Upload className="size-3.5" />
-              Use my edits
-            </Button>
-          </div>
-        </div>
-      ) : null}
-      <div
-        className="mx-auto min-h-full max-w-[1552px]"
-        inert={reviewHandoffState === "notifying" || draftActionPending}
-        aria-busy={
-          reviewHandoffState === "notifying" || draftActionPending || undefined
-        }
-      >
-        {documentPage ? (
-          <div
-            className="document-floating-rail"
-            data-testid="document-floating-rail"
-          >
+        ) : null}
+        <div
+          className="mx-auto min-h-full w-full"
+          inert={reviewHandoffState === "notifying" || draftActionPending}
+          aria-busy={
+            reviewHandoffState === "notifying" ||
+            draftActionPending ||
+            undefined
+          }
+        >
+          {documentPage ? (
             <div
-              className="document-floating-tools"
-              data-testid="document-floating-tools"
-              role="group"
-              aria-label="Document tools"
+              className="document-floating-rail"
+              data-testid="document-floating-rail"
             >
               <div
-                data-testid="document-page-header"
-                className="document-tools-group"
+                className="document-floating-tools"
+                data-testid="document-floating-tools"
+                role="group"
+                aria-label="Document tools"
               >
-                <Tooltip>
-                  <TooltipTrigger
-                    render={
-                      <Button
-                        type="button"
-                        variant="ghost"
-                        size="icon"
-                        data-testid="document-editor-view-toggle"
-                        className="document-tool-button"
-                        aria-label={editorViewModeToggleLabel}
-                        onClick={() =>
-                          onDocumentEditorViewModeChange(
-                            documentEditorViewMode === "rich-text"
-                              ? "code"
-                              : "rich-text",
-                          )
-                        }
-                      >
-                        {documentEditorViewMode === "rich-text" ? (
-                          <CodeXml />
-                        ) : (
-                          <Eye />
-                        )}
-                      </Button>
-                    }
-                  />
-                  <TooltipContent side="right">
-                    {documentEditorViewMode === "rich-text"
-                      ? "Switch to code view. Edit the Markdown source directly."
-                      : "Switch to rich text view. Edit formatted text and see version highlights."}
-                  </TooltipContent>
-                </Tooltip>
-                <Popover
-                  open={fileCopyMenuOpen}
-                  onOpenChange={setFileCopyMenuOpen}
-                >
-                  <Tooltip open={fileCopyMenuOpen ? false : undefined}>
-                    <TooltipTrigger
-                      render={
-                        <PopoverTrigger
-                          render={
-                            <Button
-                              type="button"
-                              variant="ghost"
-                              size="icon"
-                              data-testid="document-file-menu-trigger"
-                              className="document-tool-button"
-                              aria-label="Document file actions"
-                            >
-                              <FileText aria-hidden="true" />
-                              <span className="sr-only">
-                                {documentFilenameLabel}
-                              </span>
-                            </Button>
-                          }
-                        />
-                      }
-                    />
-                    <TooltipContent side="right">
-                      Copy the path, filename, Markdown, or rich text.
-                    </TooltipContent>
-                  </Tooltip>
-                  <PopoverContent
-                    aria-label="Document file actions"
-                    data-testid="document-file-menu"
-                    className="w-56 p-1"
-                    align="start"
-                    side="right"
-                    sideOffset={12}
-                  >
-                    <div className="flex flex-col">
-                      {fileCopyMenuOptions.map(({ action, label }) => (
-                        <button
-                          key={action}
-                          type="button"
-                          data-testid={`document-file-menu-${action}`}
-                          className="flex items-start gap-2 rounded-md px-2 py-1.5 text-left text-[0.72rem] leading-none text-stone-700 outline-none transition hover:bg-[#EEE9E1] focus-visible:bg-[#EEE9E1] dark:text-stone-300 dark:hover:bg-slate-700 dark:focus-visible:bg-slate-700"
-                          onClick={() => void handleCopyFileMenuAction(action)}
-                        >
-                          <Copy
-                            className="mt-[0.06rem] size-4 shrink-0 text-stone-500 dark:text-slate-400"
-                            aria-hidden="true"
-                          />
-                          <span className="grid min-w-0 flex-1 gap-1">
-                            <span className="truncate font-medium">
-                              {copiedFileAction === action ? "Copied!" : label}
-                            </span>
-                            <span className="truncate text-[0.66rem] leading-none text-stone-400 dark:text-slate-500">
-                              {fileCopyPreviewByAction[action]}
-                            </span>
-                          </span>
-                          {copiedFileAction === action ? (
-                            <Check className="mt-[0.06rem] ml-auto size-3 shrink-0 text-stone-500 dark:text-stone-400" />
-                          ) : null}
-                        </button>
-                      ))}
-                    </div>
-                  </PopoverContent>
-                </Popover>
-                <Select<DocumentInteractionMode>
-                  value={documentInteractionMode}
-                  onValueChange={(value) => {
-                    if (value) setDocumentInteractionMode(value);
-                  }}
+                <div
+                  data-testid="document-page-header"
+                  className="document-tools-group"
                 >
                   <Tooltip>
                     <TooltipTrigger
                       render={
-                        <SelectTrigger
-                          data-testid="document-mode-trigger"
-                          aria-label="Document mode"
-                          className="document-tool-button [&_[data-slot=select-icon]]:hidden"
+                        <Button
+                          type="button"
+                          variant="ghost"
+                          size="icon"
+                          data-testid="document-editor-view-toggle"
+                          className="document-tool-button"
+                          aria-label={editorViewModeToggleLabel}
+                          onClick={() =>
+                            onDocumentEditorViewModeChange(
+                              documentEditorViewMode === "rich-text"
+                                ? "code"
+                                : "rich-text",
+                            )
+                          }
                         >
-                          <ActiveDocumentInteractionModeIcon
-                            className="size-4"
-                            aria-hidden="true"
-                          />
-                          <span className="sr-only">
-                            {activeDocumentInteractionMode?.label}
-                          </span>
-                        </SelectTrigger>
+                          {documentEditorViewMode === "rich-text" ? (
+                            <CodeXml />
+                          ) : (
+                            <Eye />
+                          )}
+                        </Button>
                       }
                     />
                     <TooltipContent side="right">
-                      Choose how to work with this document. Editing changes
-                      text; Suggesting records proposals; Viewing prevents
-                      edits.
+                      {documentEditorViewMode === "rich-text"
+                        ? "Switch to code view. Edit the Markdown source directly."
+                        : "Switch to rich text view. Edit formatted text and see version highlights."}
                     </TooltipContent>
                   </Tooltip>
-                  <SelectContent side="right" align="start">
-                    {documentInteractionModeOptions.map(
-                      ({ value, label, Icon }) => (
-                        <SelectItem
-                          key={value}
-                          value={value}
-                          label={label}
-                          data-testid={`document-mode-${value}`}
-                          className="text-[0.8rem]"
-                        >
-                          <Icon className="size-3 text-stone-500 dark:text-slate-400" />
-                          <SelectItemText className="font-medium">
-                            {label}
-                          </SelectItemText>
-                        </SelectItem>
-                      ),
-                    )}
-                  </SelectContent>
-                </Select>
+                  <Popover
+                    open={fileCopyMenuOpen}
+                    onOpenChange={setFileCopyMenuOpen}
+                  >
+                    <Tooltip open={fileCopyMenuOpen ? false : undefined}>
+                      <TooltipTrigger
+                        render={
+                          <PopoverTrigger
+                            render={
+                              <Button
+                                type="button"
+                                variant="ghost"
+                                size="icon"
+                                data-testid="document-file-menu-trigger"
+                                className="document-tool-button"
+                                aria-label="Document file actions"
+                              >
+                                <FileText aria-hidden="true" />
+                                <span className="sr-only">
+                                  {documentFilenameLabel}
+                                </span>
+                              </Button>
+                            }
+                          />
+                        }
+                      />
+                      <TooltipContent side="right">
+                        Copy the path, filename, Markdown, or rich text.
+                      </TooltipContent>
+                    </Tooltip>
+                    <PopoverContent
+                      aria-label="Document file actions"
+                      data-testid="document-file-menu"
+                      className="w-56 p-1"
+                      align="start"
+                      side="right"
+                      sideOffset={12}
+                    >
+                      <div className="flex flex-col">
+                        {fileCopyMenuOptions.map(({ action, label }) => (
+                          <button
+                            key={action}
+                            type="button"
+                            data-testid={`document-file-menu-${action}`}
+                            className="flex items-start gap-2 rounded-md px-2 py-1.5 text-left text-[0.72rem] leading-none text-stone-700 outline-none transition hover:bg-[#EEE9E1] focus-visible:bg-[#EEE9E1] dark:text-stone-300 dark:hover:bg-slate-700 dark:focus-visible:bg-slate-700"
+                            onClick={() =>
+                              void handleCopyFileMenuAction(action)
+                            }
+                          >
+                            <Copy
+                              className="mt-[0.06rem] size-4 shrink-0 text-stone-500 dark:text-slate-400"
+                              aria-hidden="true"
+                            />
+                            <span className="grid min-w-0 flex-1 gap-1">
+                              <span className="truncate font-medium">
+                                {copiedFileAction === action
+                                  ? "Copied!"
+                                  : label}
+                              </span>
+                              <span className="truncate text-[0.66rem] leading-none text-stone-400 dark:text-slate-500">
+                                {fileCopyPreviewByAction[action]}
+                              </span>
+                            </span>
+                            {copiedFileAction === action ? (
+                              <Check className="mt-[0.06rem] ml-auto size-3 shrink-0 text-stone-500 dark:text-stone-400" />
+                            ) : null}
+                          </button>
+                        ))}
+                      </div>
+                    </PopoverContent>
+                  </Popover>
+                  <Select<DocumentInteractionMode>
+                    value={documentInteractionMode}
+                    onValueChange={(value) => {
+                      if (value) setDocumentInteractionMode(value);
+                    }}
+                  >
+                    <Tooltip>
+                      <TooltipTrigger
+                        render={
+                          <SelectTrigger
+                            data-testid="document-mode-trigger"
+                            aria-label="Document mode"
+                            className="document-tool-button [&_[data-slot=select-icon]]:hidden"
+                          >
+                            <ActiveDocumentInteractionModeIcon
+                              className="size-4"
+                              aria-hidden="true"
+                            />
+                            <span className="sr-only">
+                              {activeDocumentInteractionMode?.label}
+                            </span>
+                          </SelectTrigger>
+                        }
+                      />
+                      <TooltipContent side="right">
+                        Choose how to work with this document. Editing changes
+                        text; Suggesting records proposals; Viewing prevents
+                        edits.
+                      </TooltipContent>
+                    </Tooltip>
+                    <SelectContent side="right" align="start">
+                      {documentInteractionModeOptions.map(
+                        ({ value, label, Icon }) => (
+                          <SelectItem
+                            key={value}
+                            value={value}
+                            label={label}
+                            data-testid={`document-mode-${value}`}
+                            className="text-[0.8rem]"
+                          >
+                            <Icon className="size-3 text-stone-500 dark:text-slate-400" />
+                            <SelectItemText className="font-medium">
+                              {label}
+                            </SelectItemText>
+                          </SelectItem>
+                        ),
+                      )}
+                    </SelectContent>
+                  </Select>
+                </div>
+                {documentPageForEditor &&
+                documentCopyPath &&
+                backend?.info.kind === "local-files" &&
+                backend.info.capabilities?.reviewRevisions === true ? (
+                  <RevisionReview
+                    key={documentCopyPath}
+                    documentPath={documentCopyPath}
+                    markdown={documentPageForEditor.content}
+                    refreshKey={`${documentPage?.version ?? documentPage?.content ?? ""}:${documentDiskChangeState}:${reviewHandoffState}`}
+                    onRestore={handleRestoreRevision}
+                    restoreDisabledReason={restoreDisabledReason}
+                    editor={
+                      documentEditorViewMode === "rich-text"
+                        ? revisionEditor
+                        : null
+                    }
+                    legendContainer={revisionLegendContainer}
+                  />
+                ) : null}
               </div>
-              {documentPageForEditor &&
-              documentCopyPath &&
-              backend?.info.kind === "local-files" &&
-              backend.info.capabilities?.reviewRevisions === true ? (
-                <RevisionReview
-                  key={documentCopyPath}
-                  documentPath={documentCopyPath}
-                  markdown={documentPageForEditor.content}
-                  refreshKey={`${documentPage?.version ?? documentPage?.content ?? ""}:${documentDiskChangeState}:${reviewHandoffState}`}
-                  onRestore={handleRestoreRevision}
-                  restoreDisabledReason={restoreDisabledReason}
-                  editor={
-                    documentEditorViewMode === "rich-text"
-                      ? revisionEditor
-                      : null
-                  }
-                  legendContainer={revisionLegendContainer}
-                />
-              ) : null}
+              <div
+                ref={setRevisionLegendContainer}
+                className="document-version-legend-host"
+              />
             </div>
-            <div
-              ref={setRevisionLegendContainer}
-              className="document-version-legend-host"
-            />
-          </div>
-        ) : null}
-        {documentPageForEditor ? (
-          backend ? (
-            <PageCard
-              key={`${documentPageForEditor.id}:${activeDocumentPath ?? ""}`}
-              page={documentPageForEditor}
-              activeDocumentPath={activeDocumentPath}
-              selected
-              onSave={handleSaveDocumentWithDraft}
-              onSaveStateChange={handleSaveStateChange}
-              onAutosaveDeadlineChange={setAutosaveDeadline}
-              editorViewMode={documentEditorViewMode}
-              interactionMode={
-                restoringRevision ||
-                reviewHandoffState === "notifying" ||
-                draftActionPending
-                  ? "viewing"
-                  : documentInteractionMode
-              }
-              backend={backend}
-              onEditorReady={setRevisionEditor}
-              onCommentRailPresenceChange={setDocumentHasComments}
-              onDirtyStateChange={handleDocumentDirtyStateChange}
-              onLocalContentChange={handleDocumentLocalContentChange}
-              onSaveControllerChange={(controller) => {
-                saveControllerRef.current = controller;
-              }}
-              saveBlocked={
-                documentDiskChangeState !== "clean" ||
-                draftBlocksSave ||
-                restoringRevision
-              }
-              forceResetKey={documentForceResetKey}
-              initiallyDirty={draftIsSafeRecovered || draftHasLocalRecovery}
-            />
-          ) : null
-        ) : (
-          <div className="flex min-h-[50vh] items-center justify-center text-sm text-slate-500 dark:text-slate-400">
-            Open a markdown file to begin.
-          </div>
-        )}
+          ) : null}
+          {documentPageForEditor ? (
+            backend ? (
+              <PageCard
+                key={`${documentPageForEditor.id}:${activeDocumentPath ?? ""}`}
+                page={documentPageForEditor}
+                activeDocumentPath={activeDocumentPath}
+                selected
+                onSave={handleSaveDocumentWithDraft}
+                onSaveStateChange={handleSaveStateChange}
+                onAutosaveDeadlineChange={setAutosaveDeadline}
+                editorViewMode={documentEditorViewMode}
+                interactionMode={
+                  restoringRevision ||
+                  reviewHandoffState === "notifying" ||
+                  draftActionPending
+                    ? "viewing"
+                    : documentInteractionMode
+                }
+                backend={backend}
+                onEditorReady={setRevisionEditor}
+                onCodeNavigationReady={setCodeNavigation}
+                onOutlineChange={setOutlineHeadings}
+                onCommentRailPresenceChange={setDocumentHasComments}
+                onDirtyStateChange={handleDocumentDirtyStateChange}
+                onLocalContentChange={handleDocumentLocalContentChange}
+                onSaveControllerChange={(controller) => {
+                  saveControllerRef.current = controller;
+                }}
+                saveBlocked={
+                  documentDiskChangeState !== "clean" ||
+                  draftBlocksSave ||
+                  restoringRevision
+                }
+                forceResetKey={documentForceResetKey}
+                initiallyDirty={draftIsSafeRecovered || draftHasLocalRecovery}
+              />
+            ) : null
+          ) : (
+            <div className="flex min-h-[50vh] items-center justify-center text-sm text-slate-500 dark:text-slate-400">
+              Open a markdown file to begin.
+            </div>
+          )}
+        </div>
       </div>
     </div>
   );

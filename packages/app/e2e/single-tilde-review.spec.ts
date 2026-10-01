@@ -45,10 +45,11 @@ test("preserves approximation tildes when saving and reloading a review @smoke",
 
     await selectRichText(page, "Review this estimate.");
     await page.getByTestId("selection-menu-action-comment").click();
+    await expect(page.getByTestId("document-comment-dock")).toBeVisible();
     await page
-      .getByTestId("comment-rail-c1-editor")
+      .getByTestId("comment-banner-c1-editor")
       .fill("Confirm the estimate.");
-    await page.getByTestId("comment-rail-c1-action-save").click();
+    await page.getByTestId("comment-banner-c1-action-save").click();
 
     await expect
       .poll(() => readProjectFile(projectDir, "estimate.md"))
@@ -59,7 +60,11 @@ test("preserves approximation tildes when saving and reloading a review @smoke",
 
     await page.reload();
     await expect(editor).toContainText(prose);
-    await expect(page.getByTestId("document-review-rail")).toContainText(
+    await page
+      .getByTestId("comment-decoration")
+      .filter({ hasText: "Review this estimate." })
+      .click();
+    await expect(page.getByTestId("document-comment-dock")).toContainText(
       "Confirm the estimate.",
     );
     expect(

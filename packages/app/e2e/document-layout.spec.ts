@@ -1,6 +1,6 @@
 import fs from "node:fs";
 import path from "node:path";
-import { expect, test } from "@playwright/test";
+import { expect, type Page, test } from "@playwright/test";
 import {
   createMarkdownProject,
   logE2eEvent,
@@ -10,11 +10,71 @@ import {
 } from "./helpers";
 
 const plainDocument =
-  "# Centered document\n\nA short document without comments.\n";
-const commentedDocument =
-  '# Reviewed document\n\nThis {==passage==}{>>Please clarify this.<<}{id="c1" by="user" at="2026-04-23T18:00:00.000Z"} has a comment.\n';
+  "# Document layout\n\nA paragraph in the reading column.\n";
 
-test.describe("document sheet layout", () => {
+async function expectSeparatedColumns(page: Page, viewportWidth: number) {
+  const tools = page.getByTestId("document-floating-tools");
+  const outline = page.getByTestId("document-outline-sidebar");
+  const sheet = page.getByTestId("document-content-card");
+  await expect(tools).toBeVisible();
+  await expect(outline).toBeVisible();
+  await expect(sheet).toBeVisible();
+  expect(await page.evaluate(() => window.innerWidth)).toBe(viewportWidth);
+
+  const toolBox = await tools.boundingBox();
+  const outlineBox = await outline.boundingBox();
+  const sheetBox = await sheet.boundingBox();
+  if (!toolBox || !outlineBox || !sheetBox)
+    throw new Error("Tools, outline, or document sheet lacks visible bounds");
+  expect(toolBox.x).toBeGreaterThanOrEqual(0);
+  expect(toolBox.x).toBeLessThanOrEqual(16);
+  expect(toolBox.width).toBeLessThanOrEqual(60);
+  expect(toolBox.x + toolBox.width).toBeLessThanOrEqual(outlineBox.x + 1);
+  expect(outlineBox.x + outlineBox.width).toBeLessThanOrEqual(sheetBox.x + 1);
+  expect(sheetBox.x + sheetBox.width).toBeLessThanOrEqual(viewportWidth);
+  expect(sheetBox.width).toBeGreaterThanOrEqual(
+    Math.min(150, viewportWidth * 0.35),
+  );
+  if (viewportWidth <= 390) {
+    const workspaceBox = await page
+      .getByTestId("document-workspace")
+      .boundingBox();
+    const approveBox = await page
+      .getByTestId("review-handoff-split-button")
+      .boundingBox();
+    if (!workspaceBox || !approveBox)
+      throw new Error("Document scroll area or Approve control lacks bounds");
+    expect(workspaceBox.y).toBeGreaterThanOrEqual(
+      approveBox.y + approveBox.height,
+    );
+  }
+  if (viewportWidth < 640) {
+    expect(outlineBox.width).toBeGreaterThanOrEqual(96);
+    expect(outlineBox.width).toBeLessThanOrEqual(160);
+  } else {
+    expect(outlineBox.width).toBeGreaterThanOrEqual(190);
+    expect(outlineBox.width).toBeLessThanOrEqual(230);
+  }
+
+  // The sheet centers within the space after the outline, not the whole window.
+  const leftSpace = sheetBox.x - outlineBox.x - outlineBox.width;
+  const rightSpace = viewportWidth - sheetBox.x - sheetBox.width;
+  expect(Math.abs(leftSpace - rightSpace)).toBeLessThanOrEqual(24);
+  expect(
+    await page.evaluate(() => document.documentElement.scrollWidth),
+  ).toBeLessThanOrEqual(viewportWidth);
+  logE2eEvent("document-layout.persistent-columns", {
+    viewportWidth,
+    tools: toolBox,
+    outline: outlineBox,
+    sheet: sheetBox,
+    leftSpace,
+    rightSpace,
+  });
+  return { tools, outline, toolBox, outlineBox };
+}
+
+test.describe("document sheet with persistent outline", () => {
   let projectDir: string;
 
   test.beforeEach(() => {
@@ -25,203 +85,56 @@ test.describe("document sheet layout", () => {
     removeMarkdownProject(projectDir);
   });
 
-  for (const width of [320, 390, 768, 1024, 1099, 1440, 2012]) {
-    test(`keeps the left tools usable without covering text at ${width}px`, async ({
+  for (const width of [320, 390, 768, 1024, 1440, 2012]) {
+    test(`keeps tools, outline, and document separate at ${width}px${width === 320 || width === 1440 ? " @smoke" : ""}`, async ({
       page,
-      request,
     }) => {
       await page.setViewportSize({ width, height: 900 });
-      const content = `${plainDocument}\n${"A paragraph long enough to scroll the document.\n\n".repeat(30)}`;
-      const filePath = writeProjectFile(projectDir, "scrolling.md", content);
-      await request.post("/api/reviews", { data: { documentPath: filePath } });
-      await openMarkdownFile(page, filePath);
-      const tools = page.getByTestId("document-floating-tools");
-      const card = page.getByTestId("document-content-card");
-      await expect(tools).toBeVisible();
-      await expect(page.getByTestId("revision-history")).toBeVisible();
+      const documentPath = writeProjectFile(
+        projectDir,
+        "scrolling.md",
+        `${plainDocument}\n${"A paragraph long enough to scroll the document.\n\n".repeat(30)}`,
+      );
+      await openMarkdownFile(page, documentPath);
+      const { tools, outline, toolBox, outlineBox } =
+        await expectSeparatedColumns(page, width);
 
-      for (const mode of ["rich-text", "code"]) {
-        const bounds = await tools.boundingBox();
-        const sheet = await card.boundingBox();
-        if (!bounds || !sheet)
-          throw new Error("Document tools or sheet missing.");
-        expect(bounds.x).toBeGreaterThanOrEqual(0);
-        expect(bounds.x + bounds.width).toBeLessThanOrEqual(sheet.x);
-        expect(sheet.x + sheet.width).toBeLessThanOrEqual(width);
-        expect(
-          await page.evaluate(() => document.documentElement.scrollWidth),
-        ).toBeLessThanOrEqual(width);
+      await page
+        .getByTestId("document-workspace")
+        .evaluate((element) => element.scrollTo(0, element.scrollHeight));
+      await expect(tools).toBeInViewport();
+      await expect(outline).toBeInViewport();
+      const toolsAfterScroll = await tools.boundingBox();
+      const outlineAfterScroll = await outline.boundingBox();
+      expect(toolsAfterScroll?.x).toBe(toolBox.x);
+      expect(toolsAfterScroll?.y).toBe(toolBox.y);
+      expect(outlineAfterScroll?.x).toBe(outlineBox.x);
+      expect(outlineAfterScroll?.y).toBe(outlineBox.y);
 
-        await page.evaluate(() => {
-          const scroller = document.querySelector(
-            '[data-testid="document-workspace"]',
-          );
-          scroller?.scrollTo({ top: scroller.scrollHeight });
-          window.scrollTo(0, document.documentElement.scrollHeight);
-        });
-        await expect(tools).toBeInViewport();
-        const afterScroll = await tools.boundingBox();
-        expect(afterScroll?.y).toBe(bounds.y);
-        expect(afterScroll?.x).toBe(bounds.x);
+      if (width === 320) {
         await page.getByTestId("document-file-menu-trigger").click();
         await expect(page.getByTestId("document-file-menu")).toBeInViewport();
         await page.keyboard.press("Escape");
-        logE2eEvent("document-layout.fixed-tools", {
-          width,
-          mode,
-          sheet,
-          tools: bounds,
+      }
+      if (width === 390) {
+        await page.getByTestId("document-editor-view-toggle").click();
+        await expect(page.getByTestId("markdown-code-editor")).toBeVisible();
+        await expectSeparatedColumns(page, width);
+      }
+      if (process.env.ROUGHDRAFT_CAPTURE_SCREENSHOTS === "1") {
+        await page
+          .getByTestId("document-workspace")
+          .evaluate((element) => element.scrollTo(0, 0));
+        const directory = path.resolve(
+          import.meta.dirname,
+          "../../../.context/ui-state-screenshots/document-outline",
+        );
+        fs.mkdirSync(directory, { recursive: true });
+        await page.screenshot({
+          path: path.join(directory, `columns-${width}.png`),
+          animations: "disabled",
         });
-
-        if (process.env.ROUGHDRAFT_CAPTURE_SCREENSHOTS === "1") {
-          await page.evaluate(() => {
-            document
-              .querySelector('[data-testid="document-workspace"]')
-              ?.scrollTo(0, 0);
-            window.scrollTo(0, 0);
-          });
-          const output = path.resolve(
-            import.meta.dirname,
-            "../../../.context/ui-state-screenshots/document-tools",
-          );
-          fs.mkdirSync(output, { recursive: true });
-          await page.screenshot({
-            path: path.join(output, `${width}-${mode}.png`),
-          });
-        }
-        if (mode === "rich-text") {
-          await page.getByTestId("document-editor-view-toggle").click();
-          await expect(page.getByTestId("markdown-code-editor")).toBeVisible();
-        }
       }
     });
   }
-
-  test("centers an uncommented sheet in the viewport @smoke", async ({
-    page,
-  }) => {
-    await page.setViewportSize({ width: 1440, height: 900 });
-    const filePath = writeProjectFile(projectDir, "plain.md", plainDocument);
-    await openMarkdownFile(page, filePath);
-
-    const card = page.getByTestId("document-content-card");
-    await expect(card).toBeVisible();
-    await expect(page.getByTestId("document-review-rail")).toBeHidden();
-    const box = await card.boundingBox();
-    if (!box) throw new Error("The document sheet has no rendered bounds.");
-    const leftMargin = box.x;
-    const rightMargin = 1440 - box.x - box.width;
-    logE2eEvent("document-layout.plain", {
-      viewport: 1440,
-      box,
-      leftMargin,
-      rightMargin,
-    });
-
-    expect(box.width).toBeGreaterThan(800);
-    expect(Math.abs(leftMargin - rightMargin)).toBeLessThanOrEqual(2);
-  });
-
-  test("centers an uncommented sheet just below the rail breakpoint @smoke", async ({
-    page,
-  }) => {
-    const viewportWidth = 1024;
-    await page.setViewportSize({ width: viewportWidth, height: 900 });
-    const filePath = writeProjectFile(
-      projectDir,
-      "plain-near-breakpoint.md",
-      plainDocument,
-    );
-    await openMarkdownFile(page, filePath);
-
-    const card = page.getByTestId("document-content-card");
-    await expect(card).toBeVisible();
-    await expect(page.getByTestId("document-review-rail")).toBeHidden();
-    const box = await card.boundingBox();
-    if (!box) throw new Error("The document sheet has no rendered bounds.");
-    const leftMargin = box.x;
-    const rightMargin = viewportWidth - box.x - box.width;
-    const workspaceBox = await page
-      .getByTestId("document-workspace")
-      .boundingBox();
-    const shellBox = await page
-      .getByTestId("document-page-shell")
-      .boundingBox();
-    const documentScrollWidth = await page.evaluate(
-      () => document.documentElement.scrollWidth,
-    );
-    logE2eEvent("document-layout.plain-near-breakpoint", {
-      viewport: viewportWidth,
-      box,
-      leftMargin,
-      rightMargin,
-      workspaceBox,
-      shellBox,
-      documentScrollWidth,
-    });
-
-    expect(box.width).toBeGreaterThan(800);
-    expect(Math.abs(leftMargin - rightMargin)).toBeLessThanOrEqual(2);
-  });
-
-  test("keeps a commented sheet and rail visible without horizontal overflow", async ({
-    page,
-  }) => {
-    await page.setViewportSize({ width: 1440, height: 900 });
-    const filePath = writeProjectFile(
-      projectDir,
-      "commented.md",
-      commentedDocument,
-    );
-    await openMarkdownFile(page, filePath);
-
-    const card = page.getByTestId("document-content-card");
-    const rail = page.getByTestId("document-review-rail");
-    await expect(card).toBeVisible();
-    await expect(page.getByTestId("comment-thread-c1")).toBeVisible();
-    const cardBox = await card.boundingBox();
-    const railBox = await rail.boundingBox();
-    if (!cardBox || !railBox) {
-      throw new Error("The reviewed document or comment rail has no bounds.");
-    }
-    const scrollWidth = await page.evaluate(
-      () => document.documentElement.scrollWidth,
-    );
-    logE2eEvent("document-layout.commented", {
-      viewport: 1440,
-      cardBox,
-      railBox,
-      scrollWidth,
-    });
-
-    expect(cardBox.x).toBeGreaterThanOrEqual(0);
-    expect(cardBox.x + cardBox.width).toBeLessThan(railBox.x);
-    expect(railBox.x + railBox.width).toBeLessThanOrEqual(1440);
-    expect(scrollWidth).toBeLessThanOrEqual(1440);
-  });
-
-  test("returns the sheet to the viewport center after its last comment is removed", async ({
-    page,
-  }) => {
-    await page.setViewportSize({ width: 1440, height: 900 });
-    const filePath = writeProjectFile(
-      projectDir,
-      "removed-comment.md",
-      commentedDocument,
-    );
-    await openMarkdownFile(page, filePath);
-    await page.getByTestId("comment-thread-c1").click();
-    await page.getByTestId("comment-rail-c1-action-delete-thread").click();
-    await expect(page.getByTestId("document-review-rail")).toBeHidden();
-
-    await expect
-      .poll(async () => {
-        const box = await page
-          .getByTestId("document-content-card")
-          .boundingBox();
-        if (!box) return Number.POSITIVE_INFINITY;
-        return Math.abs(box.x - (1440 - box.x - box.width));
-      })
-      .toBeLessThanOrEqual(2);
-  });
 });

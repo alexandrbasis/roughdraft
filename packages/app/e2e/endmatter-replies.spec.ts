@@ -23,7 +23,10 @@ test.describe("YAML endmatter replies", () => {
     test(`keeps a YAML-only reply after save and reload (${embedded ? "embedded" : "standard"}) @smoke`, async ({
       page,
     }) => {
-      await page.setViewportSize({ width: 1280, height: 900 });
+      await page.setViewportSize({
+        width: embedded ? 1280 : 1600,
+        height: 900,
+      });
       const filePath = writeProjectFile(
         projectDir,
         "endmatter-reply.md",

@@ -12,7 +12,9 @@ import {
 test.describe("CriticMarkup review flows", () => {
   let projectDir: string;
 
-  test.beforeEach(() => {
+  test.beforeEach(async ({ page }) => {
+    // These scenarios exercise the persistent right review rail.
+    await page.setViewportSize({ width: 1600, height: 900 });
     projectDir = createMarkdownProject("criticmarkup");
   });
 
@@ -99,6 +101,8 @@ test.describe("CriticMarkup review flows", () => {
   test("animates the document layout when the review rail appears and disappears @smoke", async ({
     page,
   }) => {
+    // The inline review rail (and its FLIP transition) starts at 1440px.
+    await page.setViewportSize({ width: 2012, height: 900 });
     const filePath = writeProjectFile(
       projectDir,
       "layout-animation.md",

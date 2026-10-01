@@ -265,7 +265,7 @@ function getEditable(container: HTMLElement) {
   return editable as HTMLElement;
 }
 
-function getToolbarButton(container: HTMLElement, label: string) {
+function getToolbarButton(container: ParentNode, label: string) {
   const actionId = label.toLowerCase().replace(/[^a-z0-9]+/g, "-");
   return getByTestId<HTMLButtonElement>(
     container,
@@ -1625,12 +1625,21 @@ describe("PageCard editor integration", () => {
 
     await selectText(editor, "Heading");
     await flushAnimationFrame();
-    expect(rendered.container.textContent).toContain("Comment");
+    const commentAction = getByTestId<HTMLButtonElement>(
+      document,
+      "selection-menu-action-comment",
+    );
+    expect(
+      commentAction
+        .closest('[data-testid="selection-menu"]')
+        ?.getAttribute("data-state"),
+    ).toBe("open");
+    expect(commentAction.disabled).toBe(false);
 
     await selectText(editor, "bold");
     await flushAnimationFrame();
     expect(
-      getToolbarButton(rendered.container, "Bold").getAttribute("aria-pressed"),
+      getToolbarButton(document, "Bold").getAttribute("aria-pressed"),
     ).toBe("true");
   });
 

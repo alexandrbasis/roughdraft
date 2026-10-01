@@ -64,6 +64,43 @@ describe.each([
   });
 });
 
+it("keeps H4 through H6 as headings after a rich-editor save and reload", () => {
+  const source = "#### Fourth\n##### Fifth\n###### Sixth\n";
+  const initial = criticMarkdownToEditorState(source);
+  const editor = new Editor({
+    extensions: createEditorExtensions(""),
+    content: initial.doc,
+  });
+
+  try {
+    expect(
+      editor.getJSON().content?.map((node) => [node.type, node.attrs?.level]),
+    ).toEqual([
+      ["heading", 4],
+      ["heading", 5],
+      ["heading", 6],
+    ]);
+
+    const saved = editorStateToCriticMarkdown(
+      editor.getJSON(),
+      initial.comments,
+    );
+    expect(saved).toBe(source);
+    expect(
+      criticMarkdownToEditorState(saved).doc.content?.map((node) => [
+        node.type,
+        node.attrs?.level,
+      ]),
+    ).toEqual([
+      ["heading", 4],
+      ["heading", 5],
+      ["heading", 6],
+    ]);
+  } finally {
+    editor.destroy();
+  }
+});
+
 it.each([
   "- Parent\n\n      - literal code\n",
   "10. Parent\n\n        1. literal code\n",

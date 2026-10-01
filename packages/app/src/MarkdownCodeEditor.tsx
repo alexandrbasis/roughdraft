@@ -6,6 +6,7 @@ import { EditorView } from "@codemirror/view";
 import { tags } from "@lezer/highlight";
 import { basicSetup } from "codemirror";
 import { useEffect, useRef } from "react";
+import type { MarkdownCodeEditorNavigation } from "./document-outline";
 import { cn } from "./lib/utils";
 
 // CSS variables follow appearance changes without recreating the editor or
@@ -49,6 +50,7 @@ interface MarkdownCodeEditorProps {
   readOnly?: boolean;
   className?: string;
   testId?: string;
+  onNavigationReady?: (navigation: MarkdownCodeEditorNavigation | null) => void;
 }
 
 export function createMarkdownCodeEditorExtensions(
@@ -132,6 +134,7 @@ export function MarkdownCodeEditor({
   readOnly = false,
   className,
   testId,
+  onNavigationReady,
 }: MarkdownCodeEditorProps) {
   const hostRef = useRef<HTMLDivElement | null>(null);
   const editorViewRef = useRef<EditorView | null>(null);
@@ -140,6 +143,13 @@ export function MarkdownCodeEditor({
   const initialReadOnlyRef = useRef(readOnly);
   const lastValueRef = useRef(value);
   const editabilityRef = useRef(new Compartment());
+  const onNavigationReadyRef = useRef(onNavigationReady);
+  const navigationRef = useRef<MarkdownCodeEditorNavigation | null>(null);
+
+  useEffect(() => {
+    onNavigationReadyRef.current = onNavigationReady;
+    if (navigationRef.current) onNavigationReady?.(navigationRef.current);
+  }, [onNavigationReady]);
 
   useEffect(() => {
     onChangeRef.current = onChange;
@@ -164,8 +174,43 @@ export function MarkdownCodeEditor({
 
     editorViewRef.current = view;
     lastValueRef.current = view.state.doc.toString();
+    const navigation: MarkdownCodeEditorNavigation = {
+      scrollToSourceOffset(offset) {
+        if (!Number.isFinite(offset)) return;
+        const position = Math.max(
+          0,
+          Math.min(view.state.doc.length, Math.trunc(offset)),
+        );
+        view.dispatch({
+          effects: EditorView.scrollIntoView(position, {
+            y: "start",
+            yMargin: 24,
+          }),
+        });
+      },
+      getSourceOffsetAtViewportY(y) {
+        if (!Number.isFinite(y)) return null;
+        const scroller = view.scrollDOM.getBoundingClientRect();
+        const workspace = view.dom
+          .closest("[data-document-scroll-container]")
+          ?.getBoundingClientRect();
+        const top = Math.max(scroller.top, workspace?.top ?? scroller.top);
+        const bottom = Math.min(
+          scroller.bottom,
+          workspace?.bottom ?? scroller.bottom,
+        );
+        if (bottom <= top) return null;
+        const clampedY = Math.max(top + 1, Math.min(y, bottom - 1));
+        const x = view.contentDOM.getBoundingClientRect().left + 8;
+        return view.posAtCoords({ x, y: clampedY });
+      },
+    };
+    navigationRef.current = navigation;
+    onNavigationReadyRef.current?.(navigation);
 
     return () => {
+      onNavigationReadyRef.current?.(null);
+      navigationRef.current = null;
       editorViewRef.current = null;
       view.destroy();
     };

@@ -10,10 +10,11 @@ import {
   useState,
 } from "react";
 import {
-  CommentEditorList,
   type CommentActionDefinition,
   type CommentActionsRenderContext,
   type CommentContentRenderContext,
+  CommentEditorList,
+  type CommentEditorState,
 } from "./CommentEditorList";
 import type {
   CriticChangeAttrs,
@@ -78,6 +79,7 @@ interface DocumentReviewRailProps {
   onApplyDraftSuggestion?: () => void;
   onCancelDraftSuggestion?: () => void;
   editor?: Editor | null;
+  commentEditorState?: CommentEditorState;
 }
 
 function railLayoutItemClass(layout: "anchored" | "flow") {
@@ -214,6 +216,7 @@ export function DocumentReviewRail({
   onApplyDraftSuggestion,
   onCancelDraftSuggestion,
   editor = null,
+  commentEditorState,
 }: DocumentReviewRailProps) {
   const draftTextareaRef = useRef<HTMLTextAreaElement>(null);
   const itemRefs = useRef(new Map<string, HTMLElement>());
@@ -500,6 +503,7 @@ export function DocumentReviewRail({
               >
                 <CommentEditorList
                   comments={layout.thread.visibleComments}
+                  sharedState={commentEditorState}
                   variant="rail"
                   className={cn(!isExpanded && "pointer-events-none")}
                   interactive={isExpanded}
@@ -699,6 +703,7 @@ export function DocumentReviewRail({
             >
               <CommentEditorList
                 comments={suggestionThreadComments}
+                sharedState={commentEditorState}
                 variant="rail"
                 selectedCommentId={
                   selectedCommentId ?? (isSelected ? suggestion.changeId : null)

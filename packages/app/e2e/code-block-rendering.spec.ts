@@ -195,6 +195,7 @@ test.describe("code block presentation and editable source", () => {
   test("renders Mermaid, saves a source edit, and reloads the edited diagram @smoke", async ({
     page,
   }) => {
+    await page.setViewportSize({ width: 1600, height: 900 });
     let writes = 0;
     page.on("request", (request) => {
       if (

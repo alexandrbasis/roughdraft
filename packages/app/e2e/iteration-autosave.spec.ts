@@ -98,6 +98,7 @@ test("an external edit keeps both editions and restores the discarded reviewed d
   page,
   context,
 }) => {
+  await page.setViewportSize({ width: 1600, height: 900 });
   const projectDir = createMarkdownProject("iteration-external");
   const original = [
     "# Review iteration",
@@ -250,6 +251,7 @@ test("an external edit keeps both editions and restores the discarded reviewed d
 test("accepting all suggestions saves them and preserves existing comments @smoke", async ({
   page,
 }) => {
+  await page.setViewportSize({ width: 1600, height: 900 });
   const projectDir = createMarkdownProject("iteration-autosave");
   try {
     const filePath = writeProjectFile(

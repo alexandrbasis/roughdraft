@@ -1,11 +1,9 @@
 import type { Editor } from "@tiptap/react";
 import { useEditorState } from "@tiptap/react";
-import type { ReactNode } from "react";
-import { useCallback, useEffect, useRef, useState } from "react";
 import {
   Bold,
-  Code2,
   Check,
+  Code2,
   ExternalLink,
   Italic,
   Link2,
@@ -16,6 +14,15 @@ import {
   Trash2,
   X,
 } from "lucide-react";
+import type { ReactNode } from "react";
+import {
+  useCallback,
+  useEffect,
+  useLayoutEffect,
+  useRef,
+  useState,
+} from "react";
+import { createPortal } from "react-dom";
 import {
   getAddCommentShortcutLabel,
   matchesAddCommentShortcut,
@@ -226,6 +233,8 @@ export function EditorContextMenu({
   );
   const [renderedSelectionMenu, setRenderedSelectionMenu] =
     useState<SelectionActionPosition | null>(null);
+  const [selectionMenuOffset, setSelectionMenuOffset] = useState(0);
+  const selectionMenuRef = useRef<HTMLDivElement>(null);
   useEffect(() => {
     if (selectionMenuVisible && selectionActionPosition) {
       setRenderedSelectionMenu(selectionActionPosition);
@@ -236,6 +245,37 @@ export function EditorContextMenu({
       return () => clearTimeout(timeout);
     }
   }, [selectionMenuVisible, selectionActionPosition, renderedSelectionMenu]);
+  useLayoutEffect(() => {
+    const menu = selectionMenuRef.current;
+    if (!menu || !renderedSelectionMenu) return;
+
+    const keepWithinViewport = () => {
+      const halfWidth = menu.getBoundingClientRect().width / 2;
+      const inset = 16;
+      const minCenter = inset + halfWidth;
+      const maxCenter = window.innerWidth - inset - halfWidth;
+      const clampedCenter =
+        maxCenter < minCenter
+          ? window.innerWidth / 2
+          : Math.min(
+              Math.max(renderedSelectionMenu.left, minCenter),
+              maxCenter,
+            );
+      const nextOffset = clampedCenter - renderedSelectionMenu.left;
+      setSelectionMenuOffset((current) =>
+        Math.abs(current - nextOffset) > 0.5 ? nextOffset : current,
+      );
+    };
+
+    keepWithinViewport();
+    const resizeObserver = new ResizeObserver(keepWithinViewport);
+    resizeObserver.observe(menu);
+    window.addEventListener("resize", keepWithinViewport);
+    return () => {
+      resizeObserver.disconnect();
+      window.removeEventListener("resize", keepWithinViewport);
+    };
+  }, [renderedSelectionMenu]);
   const menuRef = useRef<HTMLDivElement>(null);
   const containerRef = useRef<HTMLDivElement>(null);
   const linkPopoverRef = useRef<HTMLDivElement>(null);
@@ -321,10 +361,8 @@ export function EditorContextMenu({
       return;
     }
 
-    const containerRect = container.getBoundingClientRect();
-    const nextLeft =
-      boundingRect.left + boundingRect.width / 2 - containerRect.left;
-    const nextTop = boundingRect.top - containerRect.top - 14;
+    const nextLeft = boundingRect.left + boundingRect.width / 2;
+    const nextTop = boundingRect.top - 14;
 
     setSelectionActionPosition({
       left: nextLeft,
@@ -666,149 +704,157 @@ export function EditorContextMenu({
       }}
     >
       {children}
-      {renderedSelectionMenu ? (
-        <div
-          className="absolute z-30 -translate-x-1/2 -translate-y-full"
-          style={{
-            left: renderedSelectionMenu.left,
-            top: renderedSelectionMenu.top,
-          }}
-        >
-          <div
-            data-testid="selection-menu"
-            data-state={selectionMenuVisible ? "open" : "closed"}
-            className="w-max max-w-[calc(100vw-2rem)] origin-bottom rounded-2xl border border-slate-200/90 dark:border-slate-700/90 bg-white/95 dark:bg-slate-800/95 p-2 shadow-[0_18px_48px_rgba(15,23,42,0.16)] dark:shadow-[0_18px_48px_rgba(0,0,0,0.4)] backdrop-blur-xl duration-150 ease-out data-[state=open]:animate-in data-[state=open]:fade-in-0 data-[state=open]:zoom-in-85 data-[state=closed]:animate-out data-[state=closed]:fade-out-0 data-[state=closed]:zoom-out-85"
-            onMouseDown={(event) => {
-              event.preventDefault();
-              event.stopPropagation();
-            }}
-          >
-            <div className="flex flex-wrap items-center gap-1">
-              <SelectionMenuButton
-                label="Bold"
-                icon={<Bold className="size-4" />}
-                active={selectionMenuState.isBoldActive}
-                disabled={!selectionMenuState.canToggleBold}
-                onClick={() => editor?.chain().focus().toggleBold().run()}
-              />
-              <SelectionMenuButton
-                label="Italic"
-                icon={<Italic className="size-4" />}
-                active={selectionMenuState.isItalicActive}
-                disabled={!selectionMenuState.canToggleItalic}
-                onClick={() => editor?.chain().focus().toggleItalic().run()}
-              />
-              <SelectionMenuButton
-                label="Inline code"
-                icon={<Code2 className="size-4" />}
-                active={selectionMenuState.isCodeActive}
-                disabled={!selectionMenuState.canToggleCode}
-                onClick={() => editor?.chain().focus().toggleCode().run()}
-              />
-              <SelectionMenuButton
-                label="Blockquote"
-                icon={<Quote className="size-4" />}
-                active={selectionMenuState.isBlockquoteActive}
-                disabled={!selectionMenuState.canToggleBlockquote}
-                onClick={() => editor?.chain().focus().toggleBlockquote().run()}
-              />
-              <SelectionMenuButton
-                label="Bulleted list"
-                icon={<List className="size-4" />}
-                active={selectionMenuState.isBulletListActive}
-                disabled={!selectionMenuState.canToggleBulletList}
-                onClick={() => editor?.chain().focus().toggleBulletList().run()}
-              />
-              <SelectionMenuButton
-                label="Numbered list"
-                icon={<ListOrdered className="size-4" />}
-                active={selectionMenuState.isOrderedListActive}
-                disabled={!selectionMenuState.canToggleOrderedList}
-                onClick={() =>
-                  editor?.chain().focus().toggleOrderedList().run()
-                }
-              />
-              <SelectionMenuButton
-                label="Link"
-                icon={<Link2 className="size-4" />}
-                active={selectionMenuState.isLinkActive}
-                onClick={openLinkPopover}
-              />
-            </div>
-            {selectionMenuState.activeCriticChangeId ? (
-              <div className="grid grid-cols-2 gap-1">
-                <button
-                  type="button"
-                  data-testid="selection-menu-action-accept-suggestion"
-                  className="inline-flex items-center justify-center gap-2 rounded-xl px-3 py-2 text-sm font-medium text-emerald-700 transition hover:bg-emerald-50 focus:outline-none focus-visible:ring-2 focus-visible:ring-emerald-300"
-                  onMouseDown={(event) => {
-                    event.preventDefault();
-                    event.stopPropagation();
-                  }}
-                  onClick={() => {
-                    if (selectionMenuState.activeCriticChangeId) {
-                      editor
-                        ?.chain()
-                        .focus()
-                        .acceptCriticChange(
-                          selectionMenuState.activeCriticChangeId,
-                        )
-                        .run();
-                    }
-                    setSelectionActionPosition(null);
-                  }}
-                >
-                  <Check className="size-4" />
-                  <span>Accept</span>
-                </button>
-                <button
-                  type="button"
-                  data-testid="selection-menu-action-reject-suggestion"
-                  className="inline-flex items-center justify-center gap-2 rounded-xl px-3 py-2 text-sm font-medium text-rose-700 transition hover:bg-rose-50 focus:outline-none focus-visible:ring-2 focus-visible:ring-rose-300"
-                  onMouseDown={(event) => {
-                    event.preventDefault();
-                    event.stopPropagation();
-                  }}
-                  onClick={() => {
-                    if (selectionMenuState.activeCriticChangeId) {
-                      editor
-                        ?.chain()
-                        .focus()
-                        .rejectCriticChange(
-                          selectionMenuState.activeCriticChangeId,
-                        )
-                        .run();
-                    }
-                    setSelectionActionPosition(null);
-                  }}
-                >
-                  <X className="size-4" />
-                  <span>Reject</span>
-                </button>
-              </div>
-            ) : null}
-            <button
-              type="button"
-              data-testid="selection-menu-action-comment"
-              className="mt-2 flex w-full items-center justify-center gap-2 rounded-xl bg-[#E8E3DB] px-3 py-2 text-left text-sm font-bold text-black shadow-[inset_0_1px_0_rgba(255,251,245,0.72)] transition hover:bg-[#ded8ce] focus:outline-none focus-visible:ring-2 focus-visible:ring-slate-300 dark:bg-slate-700 dark:text-slate-100 dark:shadow-[inset_0_1px_0_rgba(255,255,255,0.08)] dark:hover:bg-slate-600 dark:focus-visible:ring-slate-600 disabled:cursor-not-allowed disabled:opacity-40"
-              disabled={!onAddComment || editor?.state.selection.empty}
-              onMouseDown={(event) => {
-                event.preventDefault();
-                event.stopPropagation();
-              }}
-              onClick={() => {
-                onAddComment?.();
-                setSelectionActionPosition(null);
+      {renderedSelectionMenu
+        ? createPortal(
+            <div
+              ref={selectionMenuRef}
+              className="fixed z-[220] -translate-x-1/2 -translate-y-full"
+              style={{
+                left: renderedSelectionMenu.left + selectionMenuOffset,
+                top: renderedSelectionMenu.top,
               }}
             >
-              <span className="inline-flex items-center gap-2">
-                <MessageSquarePlus className="size-4.5" />
-                <span>Comment</span>
-              </span>
-            </button>
-          </div>
-        </div>
-      ) : null}
+              <div
+                data-testid="selection-menu"
+                data-state={selectionMenuVisible ? "open" : "closed"}
+                className="w-max max-w-[calc(100vw-2rem)] origin-bottom rounded-2xl border border-slate-200/90 dark:border-slate-700/90 bg-white/95 dark:bg-slate-800/95 p-2 shadow-[0_18px_48px_rgba(15,23,42,0.16)] dark:shadow-[0_18px_48px_rgba(0,0,0,0.4)] backdrop-blur-xl duration-150 ease-out data-[state=open]:animate-in data-[state=open]:fade-in-0 data-[state=open]:zoom-in-85 data-[state=closed]:animate-out data-[state=closed]:fade-out-0 data-[state=closed]:zoom-out-85"
+                onMouseDown={(event) => {
+                  event.preventDefault();
+                  event.stopPropagation();
+                }}
+              >
+                <div className="flex flex-wrap items-center gap-1">
+                  <SelectionMenuButton
+                    label="Bold"
+                    icon={<Bold className="size-4" />}
+                    active={selectionMenuState.isBoldActive}
+                    disabled={!selectionMenuState.canToggleBold}
+                    onClick={() => editor?.chain().focus().toggleBold().run()}
+                  />
+                  <SelectionMenuButton
+                    label="Italic"
+                    icon={<Italic className="size-4" />}
+                    active={selectionMenuState.isItalicActive}
+                    disabled={!selectionMenuState.canToggleItalic}
+                    onClick={() => editor?.chain().focus().toggleItalic().run()}
+                  />
+                  <SelectionMenuButton
+                    label="Inline code"
+                    icon={<Code2 className="size-4" />}
+                    active={selectionMenuState.isCodeActive}
+                    disabled={!selectionMenuState.canToggleCode}
+                    onClick={() => editor?.chain().focus().toggleCode().run()}
+                  />
+                  <SelectionMenuButton
+                    label="Blockquote"
+                    icon={<Quote className="size-4" />}
+                    active={selectionMenuState.isBlockquoteActive}
+                    disabled={!selectionMenuState.canToggleBlockquote}
+                    onClick={() =>
+                      editor?.chain().focus().toggleBlockquote().run()
+                    }
+                  />
+                  <SelectionMenuButton
+                    label="Bulleted list"
+                    icon={<List className="size-4" />}
+                    active={selectionMenuState.isBulletListActive}
+                    disabled={!selectionMenuState.canToggleBulletList}
+                    onClick={() =>
+                      editor?.chain().focus().toggleBulletList().run()
+                    }
+                  />
+                  <SelectionMenuButton
+                    label="Numbered list"
+                    icon={<ListOrdered className="size-4" />}
+                    active={selectionMenuState.isOrderedListActive}
+                    disabled={!selectionMenuState.canToggleOrderedList}
+                    onClick={() =>
+                      editor?.chain().focus().toggleOrderedList().run()
+                    }
+                  />
+                  <SelectionMenuButton
+                    label="Link"
+                    icon={<Link2 className="size-4" />}
+                    active={selectionMenuState.isLinkActive}
+                    onClick={openLinkPopover}
+                  />
+                </div>
+                {selectionMenuState.activeCriticChangeId ? (
+                  <div className="grid grid-cols-2 gap-1">
+                    <button
+                      type="button"
+                      data-testid="selection-menu-action-accept-suggestion"
+                      className="inline-flex items-center justify-center gap-2 rounded-xl px-3 py-2 text-sm font-medium text-emerald-700 transition hover:bg-emerald-50 focus:outline-none focus-visible:ring-2 focus-visible:ring-emerald-300"
+                      onMouseDown={(event) => {
+                        event.preventDefault();
+                        event.stopPropagation();
+                      }}
+                      onClick={() => {
+                        if (selectionMenuState.activeCriticChangeId) {
+                          editor
+                            ?.chain()
+                            .focus()
+                            .acceptCriticChange(
+                              selectionMenuState.activeCriticChangeId,
+                            )
+                            .run();
+                        }
+                        setSelectionActionPosition(null);
+                      }}
+                    >
+                      <Check className="size-4" />
+                      <span>Accept</span>
+                    </button>
+                    <button
+                      type="button"
+                      data-testid="selection-menu-action-reject-suggestion"
+                      className="inline-flex items-center justify-center gap-2 rounded-xl px-3 py-2 text-sm font-medium text-rose-700 transition hover:bg-rose-50 focus:outline-none focus-visible:ring-2 focus-visible:ring-rose-300"
+                      onMouseDown={(event) => {
+                        event.preventDefault();
+                        event.stopPropagation();
+                      }}
+                      onClick={() => {
+                        if (selectionMenuState.activeCriticChangeId) {
+                          editor
+                            ?.chain()
+                            .focus()
+                            .rejectCriticChange(
+                              selectionMenuState.activeCriticChangeId,
+                            )
+                            .run();
+                        }
+                        setSelectionActionPosition(null);
+                      }}
+                    >
+                      <X className="size-4" />
+                      <span>Reject</span>
+                    </button>
+                  </div>
+                ) : null}
+                <button
+                  type="button"
+                  data-testid="selection-menu-action-comment"
+                  className="mt-2 flex w-full items-center justify-center gap-2 rounded-xl bg-[#E8E3DB] px-3 py-2 text-left text-sm font-bold text-black shadow-[inset_0_1px_0_rgba(255,251,245,0.72)] transition hover:bg-[#ded8ce] focus:outline-none focus-visible:ring-2 focus-visible:ring-slate-300 dark:bg-slate-700 dark:text-slate-100 dark:shadow-[inset_0_1px_0_rgba(255,255,255,0.08)] dark:hover:bg-slate-600 dark:focus-visible:ring-slate-600 disabled:cursor-not-allowed disabled:opacity-40"
+                  disabled={!onAddComment || editor?.state.selection.empty}
+                  onMouseDown={(event) => {
+                    event.preventDefault();
+                    event.stopPropagation();
+                  }}
+                  onClick={() => {
+                    onAddComment?.();
+                    setSelectionActionPosition(null);
+                  }}
+                >
+                  <span className="inline-flex items-center gap-2">
+                    <MessageSquarePlus className="size-4.5" />
+                    <span>Comment</span>
+                  </span>
+                </button>
+              </div>
+            </div>,
+            document.body,
+          )
+        : null}
       {linkPopoverState ? (
         <div
           ref={linkPopoverRef}

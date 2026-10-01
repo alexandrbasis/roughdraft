@@ -316,6 +316,108 @@ test.describe("narrow comment composer", () => {
     });
   });
 
+  test("preserves an unsaved reply when resizing from dock to rail", async ({
+    page,
+  }) => {
+    await page.setViewportSize({ width: 900, height: 800 });
+    const filePath = writeProjectFile(
+      projectDir,
+      "resize-reply.md",
+      '# Resize reply\n\nCheck {==this passage==}{>>Please clarify.<<}{id="c1" by="user" at="2026-04-23T18:00:00.000Z"}.\n',
+    );
+    await openMarkdownFile(page, filePath);
+    await page.getByTestId("comment-decoration").click();
+    await page.getByTestId("comment-banner-c1-action-reply").click();
+    const unsavedReply = "A reply I have not saved yet.";
+    await page.getByTestId("comment-banner-c2-editor").fill(unsavedReply);
+
+    await page.setViewportSize({ width: 1600, height: 800 });
+    const railReply = page.getByTestId("comment-rail-c2-editor");
+    await expect(railReply).toBeVisible();
+    await expect(railReply).toHaveValue(unsavedReply);
+    await page.getByTestId("comment-rail-c2-action-save").click();
+    await expect
+      .poll(() => readProjectFile(projectDir, "resize-reply.md"))
+      .toContain(unsavedReply);
+  });
+
+  test("keeps inline review actions usable at 1280px @smoke", async ({
+    page,
+  }) => {
+    await page.setViewportSize({ width: 1280, height: 900 });
+    const filePath = writeProjectFile(
+      projectDir,
+      "inline-review.md",
+      [
+        "# Inline review",
+        "",
+        'Keep {++clear wording++}{id="s1" by="user" at="2026-04-23T18:00:00.000Z"} here.',
+        "",
+        'Remove {--drafty --}{id="s2" by="user" at="2026-04-23T18:01:00.000Z"}there.',
+        "",
+        'The {==original point==}{>>Preserve this discussion<<}{id="c1" by="user" at="2026-04-23T18:02:00.000Z"} remains under review.',
+        "",
+      ].join("\n"),
+    );
+    await openMarkdownFile(page, filePath);
+    await expect(page.getByTestId("document-review-rail")).toBeHidden();
+
+    for (const { id, action } of [
+      { id: "s1", action: "accept" },
+      { id: "s2", action: "reject" },
+    ] as const) {
+      const suggestion = page.locator(`[data-critic-change-id="${id}"]`);
+      await suggestion.scrollIntoViewIfNeeded();
+      const bounds = await suggestion.boundingBox();
+      if (!bounds) throw new Error(`Suggestion ${id} is not visible.`);
+      const y = bounds.y + bounds.height / 2;
+      await page.mouse.move(bounds.x + 2, y);
+      await page.mouse.down();
+      await page.mouse.move(bounds.x + bounds.width - 2, y, { steps: 6 });
+      await page.mouse.up();
+      const reviewAction = page.getByTestId(
+        `selection-menu-action-${action}-suggestion`,
+      );
+      await expect(reviewAction).toBeInViewport({ ratio: 1 });
+      await reviewAction.click();
+    }
+
+    await expect
+      .poll(() => readProjectFile(projectDir, "inline-review.md"))
+      .toContain("Remove drafty there.");
+    const afterSuggestions = readProjectFile(projectDir, "inline-review.md");
+    expect(afterSuggestions).toContain("Keep clear wording here.");
+    expect(afterSuggestions).toContain("Preserve this discussion");
+    expect(afterSuggestions).not.toContain("{++");
+    expect(afterSuggestions).not.toContain("{--");
+
+    await page
+      .getByTestId("comment-decoration")
+      .filter({ hasText: "original point" })
+      .click();
+    await expect(page.getByTestId("document-comment-dock")).toBeVisible();
+    await page.getByTestId("comment-banner-c1-action-reply").click();
+    await page
+      .getByTestId("comment-banner-c2-editor")
+      .fill("The original point is still covered.");
+    await page.getByTestId("comment-banner-c2-action-save").click();
+    await expect
+      .poll(() => readProjectFile(projectDir, "inline-review.md"))
+      .toContain("The original point is still covered.");
+
+    await page.reload();
+    await page
+      .getByTestId("comment-decoration")
+      .filter({ hasText: "original point" })
+      .click();
+    await expect(page.getByTestId("document-comment-dock")).toContainText(
+      "The original point is still covered.",
+    );
+    expect(readProjectFile(projectDir, "inline-review.md")).toContain(
+      "Preserve this discussion",
+    );
+  });
+
   test("keeps the root passage clear when a reply screenshot grows the dock", async ({
     page,
   }) => {

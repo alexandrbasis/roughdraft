@@ -1,18 +1,20 @@
 import { Bot, Check, Pencil, Reply, Trash2, User, X } from "lucide-react";
 import {
+  type Dispatch,
   type KeyboardEvent,
   type MouseEvent,
   type MutableRefObject,
   type ReactNode,
+  type SetStateAction,
   useEffect,
   useLayoutEffect,
   useMemo,
   useRef,
   useState,
 } from "react";
-import { Button } from "./components/ui/button";
 import { CommentBody } from "./CommentBody";
 import { CommentComposer } from "./CommentComposer";
+import { Button } from "./components/ui/button";
 import {
   Tooltip,
   TooltipContent,
@@ -28,6 +30,13 @@ import { cn } from "./lib/utils";
 interface FocusReturnTarget {
   actionKey: string;
   element: HTMLElement;
+}
+
+export interface CommentEditorState {
+  drafts: Record<string, string>;
+  setDrafts: Dispatch<SetStateAction<Record<string, string>>>;
+  editingCommentIds: string[];
+  setEditingCommentIds: Dispatch<SetStateAction<string[]>>;
 }
 
 interface CommentEditorListProps {
@@ -51,6 +60,7 @@ interface CommentEditorListProps {
   getCommentActions?: (
     context: CommentActionsRenderContext,
   ) => CommentActionDefinition[];
+  sharedState?: CommentEditorState;
 }
 
 export interface CommentActionDefinition {
@@ -116,12 +126,21 @@ export function CommentEditorList({
   onAutoFocusComment,
   renderCommentContent,
   getCommentActions,
+  sharedState,
 }: CommentEditorListProps) {
   const textareaRefs = useRef(new Map<string, HTMLTextAreaElement>());
   const focusReturnRefs = useRef(new Map<string, FocusReturnTarget>());
   const pendingFocusReturnIdRef = useRef<string | null>(null);
-  const [drafts, setDrafts] = useState<Record<string, string>>({});
-  const [editingCommentIds, setEditingCommentIds] = useState<string[]>([]);
+  const [localDrafts, setLocalDrafts] = useState<Record<string, string>>({});
+  const [localEditingCommentIds, setLocalEditingCommentIds] = useState<
+    string[]
+  >([]);
+  const drafts = sharedState?.drafts ?? localDrafts;
+  const setDrafts = sharedState?.setDrafts ?? setLocalDrafts;
+  const editingCommentIds =
+    sharedState?.editingCommentIds ?? localEditingCommentIds;
+  const setEditingCommentIds =
+    sharedState?.setEditingCommentIds ?? setLocalEditingCommentIds;
   const threads = useMemo(() => buildCommentThreads(comments), [comments]);
   const commentMap = useMemo(
     () => new Map(comments.map((comment) => [comment.id, comment])),
@@ -173,6 +192,7 @@ export function CommentEditorList({
   };
 
   useEffect(() => {
+    if (sharedState) return;
     const validCommentIds = new Set(comments.map((comment) => comment.id));
 
     setDrafts((current) =>
@@ -185,7 +205,7 @@ export function CommentEditorList({
     setEditingCommentIds((current) =>
       current.filter((commentId) => validCommentIds.has(commentId)),
     );
-  }, [comments]);
+  }, [comments, sharedState, setDrafts, setEditingCommentIds]);
 
   useEffect(() => {
     if (!interactive) return;
@@ -194,17 +214,23 @@ export function CommentEditorList({
     const pendingComment = commentMap.get(pendingFocusCommentId);
     if (!pendingComment) return;
 
-    setDrafts((current) => ({
-      ...current,
-      [pendingFocusCommentId]:
-        current[pendingFocusCommentId] ?? pendingComment.content,
-    }));
+    setDrafts((current) =>
+      Object.hasOwn(current, pendingFocusCommentId)
+        ? current
+        : { ...current, [pendingFocusCommentId]: pendingComment.content },
+    );
     setEditingCommentIds((current) =>
       current.includes(pendingFocusCommentId)
         ? current
         : [...current, pendingFocusCommentId],
     );
-  }, [commentMap, interactive, pendingFocusCommentId]);
+  }, [
+    commentMap,
+    interactive,
+    pendingFocusCommentId,
+    setDrafts,
+    setEditingCommentIds,
+  ]);
 
   useEffect(() => {
     if (!interactive) return;
