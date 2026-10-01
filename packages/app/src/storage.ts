@@ -3,6 +3,7 @@ export interface Page {
   title: string;
   content: string;
   version?: string;
+  reviewState?: "awaiting-review" | "editing" | "completed";
 }
 
 export interface MarkdownFileChangeEvent {
@@ -33,6 +34,7 @@ export interface CompleteReviewResult {
 
 export interface CompleteReviewOptions {
   overallComment?: string;
+  expectedVersion?: string;
 }
 
 export interface ReviewWatchStatus {

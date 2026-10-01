@@ -238,7 +238,7 @@ describe("server-backed draft recovery", () => {
     });
   }
 
-  async function advance(ms = 1000) {
+  async function advance(ms = 10_000) {
     await act(async () => {
       await vi.advanceTimersByTimeAsync(ms);
     });
@@ -287,6 +287,21 @@ describe("server-backed draft recovery", () => {
       createDraftStorage(localStorage)
         .list(storageKey)
         .some((draft) => draft.content === serverDraft.content),
+    ).toBe(true);
+  });
+
+  it("still offers a same-tab server-only draft when browser storage was lost", async () => {
+    sessionStorage.setItem("roughdraft:draft-tab-id:v1", serverDraft.tabId);
+    expect(localDrafts()).toEqual([]);
+    await renderWorkspace();
+
+    expect(byTestId("draft-other-notice")?.textContent).toMatch(
+      /A server draft is available/,
+    );
+    await press("draft-recovery-other");
+    expect(editor().state.doc.toString()).toBe(serverDraft.content);
+    expect(
+      localDrafts().some((draft) => draft.content === serverDraft.content),
     ).toBe(true);
   });
 
@@ -426,7 +441,7 @@ describe("server-backed draft recovery", () => {
     assert(newer);
     expect(newer.tabId).toBe(older.tabId);
     expect(newer.revision).not.toBe(older.revision);
-    await advance(500);
+    await advance();
     expect(props.onSaveDocument).toHaveBeenCalledExactlyOnceWith(
       "notes.md",
       newer.content,
@@ -460,6 +475,74 @@ describe("server-backed draft recovery", () => {
     );
   });
 
+  it("does not call an older same-tab server copy another browser's draft while editing", async () => {
+    records = [];
+    await renderWorkspace();
+    await edit("First local edit");
+    const older = localDrafts()[0];
+    assert(older);
+    await edit("Second local edit");
+    const newer = localDrafts()[0];
+    assert(newer);
+    expect(newer.tabId).toBe(older.tabId);
+    expect(newer.revision).not.toBe(older.revision);
+
+    // A reconnect can return a snapshot taken before the latest mirror PUT.
+    const pending = deferred<Response>();
+    listResponse = () => pending.promise;
+    assert(props.backend);
+    props.backend = { ...props.backend };
+    await renderWorkspace();
+    await act(async () =>
+      pending.resolve(
+        Response.json({ documentPath, drafts: [{ ...older, documentPath }] }),
+      ),
+    );
+
+    expect(editor().state.doc.toString()).toBe(newer.content);
+    expect(byTestId("draft-other-notice")).toBeNull();
+    expect(props.onSaveDocument).not.toHaveBeenCalled();
+  });
+
+  it("keeps the other-browser notice hidden for an older own draft after saving", async () => {
+    records = [];
+    await renderWorkspace();
+    await edit("First local edit");
+    const older = localDrafts()[0];
+    assert(older);
+    await edit("Second local edit");
+    const newer = localDrafts()[0];
+    assert(newer);
+    await advance();
+    expect(props.onSaveDocument).toHaveBeenCalledWith(
+      "notes.md",
+      newer.content,
+    );
+
+    // The parent receives the acknowledged disk version. A delayed list from
+    // a refreshed backend may still describe this tab's older mirrored edit.
+    assert(props.documentPage);
+    props.documentPage = {
+      ...props.documentPage,
+      content: newer.content,
+      version: "disk-v2",
+    };
+    await renderWorkspace();
+    const pending = deferred<Response>();
+    listResponse = () => pending.promise;
+    assert(props.backend);
+    props.backend = { ...props.backend };
+    await renderWorkspace();
+    await act(async () =>
+      pending.resolve(
+        Response.json({ documentPath, drafts: [{ ...older, documentPath }] }),
+      ),
+    );
+
+    expect(editor().state.doc.toString()).toBe(newer.content);
+    expect(byTestId("draft-other-notice")).toBeNull();
+  });
+
   it("keeps changed disk content until explicit recovery and requires explicit overwrite", async () => {
     assert(props.documentPage);
     props.documentPage = {
@@ -471,7 +554,7 @@ describe("server-backed draft recovery", () => {
     await press("draft-recovery-other");
     expect(editor().state.doc.toString()).toBe("New disk version");
     expect(byTestId("draft-recovery-notice")?.textContent).toMatch(
-      /disk.*changed/i,
+      /file.*changed/i,
     );
     await advance();
     expect(props.onSaveDocument).not.toHaveBeenCalled();
@@ -601,7 +684,7 @@ describe("server-backed draft recovery", () => {
     );
     expect(byTestId("draft-storage-error")?.textContent).toMatch(/full/i);
 
-    await advance(500);
+    await advance();
 
     expect(props.onSaveDocument).toHaveBeenCalledWith(
       "notes.md",
@@ -793,7 +876,7 @@ describe("server-backed draft recovery", () => {
     props.onSaveDocument = vi.fn(() => save.promise);
     await renderWorkspace();
     await edit("First edit being saved");
-    await advance(500);
+    await advance();
     expect(props.onSaveDocument).toHaveBeenCalledWith(
       "notes.md",
       "First edit being saved",
@@ -805,7 +888,13 @@ describe("server-backed draft recovery", () => {
     assert(newer, "The newer edit must already have a local recovery copy");
     await act(async () => save.resolve());
 
-    expect(localDrafts()).toContainEqual(newer);
+    expect(localDrafts()).toContainEqual(
+      expect.objectContaining({
+        content: newer.content,
+        tabId: newer.tabId,
+        baseContent: "First edit being saved",
+      }),
+    );
     expect(records.some((draft) => draft.content === newer.content)).toBe(true);
     expect(editor().state.doc.toString()).toBe(newer.content);
     expect(

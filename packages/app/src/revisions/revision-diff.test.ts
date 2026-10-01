@@ -5,6 +5,7 @@ import { criticMarkdownToEditorState } from "../critic-markup";
 import { createEditorExtensions } from "../editor-extensions";
 import {
   createRevisionPlugin,
+  revisionColorClass,
   updateRevisionDecorations,
 } from "./revision-decorations";
 import { buildRevisionChanges } from "./revision-diff";
@@ -21,6 +22,8 @@ const history = (...contents: string[]): DocumentRevision[] =>
     version: `v${number}`,
     source: number ? "external" : "baseline",
     createdAt: "2026-09-29T00:00:00Z",
+    completedAt: "2026-09-29T00:00:00Z",
+    actor: number ? "agent" : "unknown",
   }));
 const changes = (...contents: string[]) =>
   buildRevisionChanges(
@@ -28,6 +31,14 @@ const changes = (...contents: string[]) =>
     parse(contents.at(-1) ?? ""),
     schema,
   );
+
+it("uses thirty palette slots before repeating the first at V31", () => {
+  const classes = Array.from({ length: 30 }, (_, index) =>
+    revisionColorClass(index + 1),
+  );
+  expect(new Set(classes).size).toBe(30);
+  expect(revisionColorClass(31)).toBe(revisionColorClass(1));
+});
 
 describe("revision provenance", () => {
   it("attributes additions to actual current document positions", () => {
@@ -236,41 +247,33 @@ describe("revision provenance", () => {
   });
 });
 
-it("renders selectable revision decorations without changing document JSON", () => {
+it("renders colored changes without version labels or document mutations", () => {
   const editor = new Editor({
     element: document.createElement("div"),
     extensions: createEditorExtensions(""),
     content: criticMarkdownToEditorState("Hello brave world").doc,
   });
-  const onSelect = vi.fn();
-  editor.registerPlugin(createRevisionPlugin(onSelect));
+  editor.registerPlugin(createRevisionPlugin(() => {}));
   const before = editor.getJSON();
   const result = changes("Hello world", "Hello brave world");
   updateRevisionDecorations(editor, {
     changes: result,
-    selectedRevision: null,
+    selectedRevisions: null,
     activeChangeId: null,
     visible: true,
   });
   expect(editor.getJSON()).toEqual(before);
-  const marker = editor.view.dom.querySelector<HTMLButtonElement>(
-    "[data-testid='revision-change-marker']",
-  );
-  expect(marker).not.toBeNull();
-  if (!marker) throw new Error("Missing revision marker");
-  expect(marker.textContent).toBe("R1");
   expect(
-    marker.parentElement?.classList.contains("revision-gutter-anchor"),
-  ).toBe(true);
-  marker.click();
-  expect(onSelect).toHaveBeenCalledWith(result[0].id);
+    editor.view.dom.querySelector("[data-testid='revision-change-marker']"),
+  ).toBeNull();
+  expect(editor.view.dom.textContent).toBe("Hello brave world");
   expect(
     editor.view.dom.querySelector("[data-testid='revision-highlight']")
       ?.textContent,
   ).toBe("brave ");
   updateRevisionDecorations(editor, {
     changes: result,
-    selectedRevision: 2,
+    selectedRevisions: [2],
     activeChangeId: null,
     visible: true,
   });
@@ -295,7 +298,7 @@ it("shows deleted text inline as a colored strike-through without editing the do
   const result = changes("Hello brave world", "Hello world");
   const settings = {
     changes: result,
-    selectedRevision: null,
+    selectedRevisions: null,
     activeChangeId: null,
     visible: true,
   };
@@ -313,7 +316,7 @@ it("shows deleted text inline as a colored strike-through without editing the do
   deletion?.click();
   expect(onSelect).toHaveBeenCalledWith(result[0].id);
 
-  updateRevisionDecorations(editor, { ...settings, selectedRevision: 2 });
+  updateRevisionDecorations(editor, { ...settings, selectedRevisions: [2] });
   expect(
     editor.view.dom.querySelector("[data-testid='revision-deletion']"),
   ).toBeNull();
@@ -326,7 +329,7 @@ it("shows deleted text inline as a colored strike-through without editing the do
   editor.destroy();
 });
 
-it("groups revisions in one paragraph into a single gutter badge", () => {
+it("keeps multiple revision colors without adding labels to the paragraph", () => {
   const text = "A small cat sleeps.";
   const editor = new Editor({
     element: document.createElement("div"),
@@ -337,15 +340,22 @@ it("groups revisions in one paragraph into a single gutter badge", () => {
   const result = changes("A cat.", "A big cat sleeps.", text);
   updateRevisionDecorations(editor, {
     changes: result,
-    selectedRevision: null,
+    selectedRevisions: null,
     activeChangeId: null,
     visible: true,
   });
   const markers = editor.view.dom.querySelectorAll(
     "[data-testid='revision-change-marker']",
   );
-  expect(markers).toHaveLength(1);
-  expect(markers[0].textContent).toContain("+1");
+  expect(markers).toHaveLength(0);
+  const colors = new Set(
+    [
+      ...editor.view.dom.querySelectorAll(
+        "[data-testid='revision-highlight'], [data-testid='revision-deletion']",
+      ),
+    ].map((change) => change.getAttribute("data-revision-number")),
+  );
+  expect(colors).toEqual(new Set(["1", "2"]));
   expect(editor.getText()).toBe(text);
   editor.destroy();
 });
@@ -364,7 +374,7 @@ it("does not append a paragraph or emit content updates when decorating a docume
   const before = editor.getJSON();
   updateRevisionDecorations(editor, {
     changes: [],
-    selectedRevision: null,
+    selectedRevisions: null,
     activeChangeId: null,
     visible: true,
   });

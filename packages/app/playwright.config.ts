@@ -6,9 +6,10 @@ const appUrl = `http://127.0.0.1:${appPort}`;
 
 export default defineConfig({
   testDir: "./e2e",
-  timeout: 30_000,
+  timeout: 60_000,
   expect: {
-    timeout: 7_500,
+    // Automatic writes use the same ten-second cadence in tests and production.
+    timeout: 15_000,
   },
   fullyParallel: true,
   reporter: process.env.CI ? "github" : "list",

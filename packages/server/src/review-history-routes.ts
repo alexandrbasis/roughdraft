@@ -57,7 +57,35 @@ export function installReviewHistoryRoutes(
       const file = documentPath(req.query.documentPath, true);
       db.observeRevision(file, fs.readFileSync(file, "utf8"));
       res.setHeader("Cache-Control", "no-store");
-      res.json({ documentPath: file, revisions: db.revisions(file) });
+      res.json({
+        documentPath: file,
+        revisions: db.completedIterations(file),
+        checkpoints: db.revisions(file),
+        recoveryPoints: db.recoveryPoints(file),
+      });
+    }),
+  );
+  app.get(
+    "/api/reviews/document",
+    route((req, res) => {
+      const file = documentPath(req.query.documentPath, true);
+      const content = fs.readFileSync(file, "utf8");
+      db.observeRevision(file, content);
+      const iterations = db.completedIterations(file);
+      const recoveryPoints = db.recoveryPoints(file);
+      res.setHeader("Cache-Control", "no-store");
+      res.json({
+        documentPath: file,
+        content,
+        version: createHash("sha256").update(content).digest("hex"),
+        editingState: db.documentEditingState(file),
+        iterations,
+        currentIteration: db.currentIteration(file, content),
+        drafts: db.listDrafts(file),
+        checkpoints: db.revisions(file),
+        recoveryPoints,
+        snapshots: recoveryPoints,
+      });
     }),
   );
   app.get(

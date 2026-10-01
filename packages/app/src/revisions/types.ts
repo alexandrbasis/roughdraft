@@ -5,6 +5,18 @@ export interface DocumentRevision {
   version: string;
   source: "baseline" | "external" | "review";
   createdAt: string;
+  completedAt: string | null;
+  actor: "agent" | "user" | "unknown";
+  author?: string;
+}
+
+export interface RecoveryPoint {
+  id: string;
+  documentPath: string;
+  content: string;
+  version: string;
+  createdAt: string;
+  reason: string;
 }
 
 export interface RevisionChange {

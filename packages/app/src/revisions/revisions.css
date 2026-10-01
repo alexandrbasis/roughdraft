@@ -1,64 +1,104 @@
-/* Revision identity is independent of comment and suggestion status colors. */
+/* Saved versions use 30 pastel slots, then repeat at V31. Golden-angle
+   spacing keeps adjacent version numbers visually separated in either theme. */
+[class*="revision-color-"] {
+  --revision-ink: oklch(0.38 0.12 var(--revision-hue));
+  --revision-fill: oklch(0.94 0.055 var(--revision-hue));
+  --revision-line: oklch(0.57 0.12 var(--revision-hue));
+}
+.dark [class*="revision-color-"] {
+  --revision-ink: oklch(0.85 0.065 var(--revision-hue));
+  --revision-fill: oklch(0.3 0.048 var(--revision-hue));
+  --revision-line: oklch(0.7 0.1 var(--revision-hue));
+}
 .revision-color-0 {
-  --revision-ink: #2455a4;
-  --revision-fill: #e8f0ff;
-  --revision-line: #4a75ba;
+  --revision-hue: 0deg;
 }
 .revision-color-1 {
-  --revision-ink: #7041a0;
-  --revision-fill: #f2eafd;
-  --revision-line: #9064bb;
+  --revision-hue: 137.508deg;
 }
 .revision-color-2 {
-  --revision-ink: #086879;
-  --revision-fill: #def4f8;
-  --revision-line: #348398;
+  --revision-hue: 275.016deg;
 }
 .revision-color-3 {
-  --revision-ink: #913f88;
-  --revision-fill: #f9e9f7;
-  --revision-line: #ad60a5;
+  --revision-hue: 52.524deg;
 }
 .revision-color-4 {
-  --revision-ink: #484fa6;
-  --revision-fill: #ededff;
-  --revision-line: #747aca;
+  --revision-hue: 190.032deg;
 }
 .revision-color-5 {
-  --revision-ink: #475d75;
-  --revision-fill: #e8eff5;
-  --revision-line: #7088a1;
+  --revision-hue: 327.54deg;
 }
-
-.dark .revision-color-0 {
-  --revision-ink: #bed5ff;
-  --revision-fill: #24354e;
-  --revision-line: #81a8e8;
+.revision-color-6 {
+  --revision-hue: 105.048deg;
 }
-.dark .revision-color-1 {
-  --revision-ink: #dec7fa;
-  --revision-fill: #3c2c50;
-  --revision-line: #b18bd9;
+.revision-color-7 {
+  --revision-hue: 242.556deg;
 }
-.dark .revision-color-2 {
-  --revision-ink: #a8e1eb;
-  --revision-fill: #183d45;
-  --revision-line: #65aebb;
+.revision-color-8 {
+  --revision-hue: 20.064deg;
 }
-.dark .revision-color-3 {
-  --revision-ink: #edc4e9;
-  --revision-fill: #472c44;
-  --revision-line: #c68ebf;
+.revision-color-9 {
+  --revision-hue: 157.572deg;
 }
-.dark .revision-color-4 {
-  --revision-ink: #cbceff;
-  --revision-fill: #303354;
-  --revision-line: #929adf;
+.revision-color-10 {
+  --revision-hue: 295.08deg;
 }
-.dark .revision-color-5 {
-  --revision-ink: #c9dae9;
-  --revision-fill: #2c3949;
-  --revision-line: #97adbf;
+.revision-color-11 {
+  --revision-hue: 72.588deg;
+}
+.revision-color-12 {
+  --revision-hue: 210.096deg;
+}
+.revision-color-13 {
+  --revision-hue: 347.604deg;
+}
+.revision-color-14 {
+  --revision-hue: 125.112deg;
+}
+.revision-color-15 {
+  --revision-hue: 262.62deg;
+}
+.revision-color-16 {
+  --revision-hue: 40.128deg;
+}
+.revision-color-17 {
+  --revision-hue: 177.636deg;
+}
+.revision-color-18 {
+  --revision-hue: 315.144deg;
+}
+.revision-color-19 {
+  --revision-hue: 92.652deg;
+}
+.revision-color-20 {
+  --revision-hue: 230.16deg;
+}
+.revision-color-21 {
+  --revision-hue: 7.668deg;
+}
+.revision-color-22 {
+  --revision-hue: 145.176deg;
+}
+.revision-color-23 {
+  --revision-hue: 282.684deg;
+}
+.revision-color-24 {
+  --revision-hue: 60.192deg;
+}
+.revision-color-25 {
+  --revision-hue: 197.7deg;
+}
+.revision-color-26 {
+  --revision-hue: 335.208deg;
+}
+.revision-color-27 {
+  --revision-hue: 112.716deg;
+}
+.revision-color-28 {
+  --revision-hue: 250.224deg;
+}
+.revision-color-29 {
+  --revision-hue: 27.732deg;
 }
 
 .tiptap .revision-highlight {
@@ -99,7 +139,6 @@
   outline: 1px solid var(--revision-line);
   outline-offset: 2px;
 }
-.revision-change-marker,
 .revision-label {
   display: inline-flex;
   align-items: center;
@@ -115,48 +154,32 @@
   padding: 1px 5px;
   white-space: nowrap;
 }
-.revision-change-marker {
-  cursor: pointer;
-  vertical-align: baseline;
-  margin-inline: 3px;
-  min-height: 24px;
+.revision-legend {
+  display: flex;
+  flex-direction: column;
+  align-items: center;
+  gap: 0.375rem;
+  margin: 0;
+  padding: 3px;
+  list-style: none;
+}
+.revision-legend-badge {
+  min-width: 2.25rem;
+  min-height: 1.75rem;
+  padding: 2px 4px;
+  border: 1px solid var(--revision-line);
+  border-radius: 6px;
+  background: var(--revision-fill);
+  color: var(--revision-ink);
+  font-size: 11px;
+  font-weight: 600;
+  font-variant-numeric: tabular-nums;
+  cursor: default;
   user-select: none;
 }
-.revision-change-marker:focus-visible {
+.revision-legend-badge:focus-visible {
   outline: 2px solid var(--revision-line);
   outline-offset: 2px;
-}
-.revision-gutter-anchor {
-  position: relative;
-  display: inline-block;
-  width: 0;
-  height: 0;
-  vertical-align: baseline;
-  user-select: none;
-}
-.revision-gutter-marker {
-  position: absolute;
-  inset-inline-end: calc(100% + 8px);
-  bottom: -5px;
-  margin: 0;
-  font-size: 10px;
-  padding-inline: 3px;
-}
-/* Tight cells and list bullets leave no safe outside gutter. */
-.tiptap :is(li, td, th, pre) .revision-gutter-anchor {
-  width: auto;
-  height: auto;
-  margin-inline-end: 5px;
-}
-.tiptap :is(li, td, th, pre) .revision-gutter-marker {
-  position: static;
-}
-@media (max-width: 640px) {
-  .revision-gutter-marker {
-    inset-inline-end: calc(100% + 3px);
-    font-size: 9px;
-    padding-inline: 2px;
-  }
 }
 .revision-swatch {
   display: inline-block;

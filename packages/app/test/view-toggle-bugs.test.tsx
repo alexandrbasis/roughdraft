@@ -272,15 +272,18 @@ describe("saving/saved status indicator (issue 2 fix)", () => {
   async function renderSaveStatus({
     saveState = "saved",
     documentDiskChangeState = "clean",
+    autosaveDeadline = null,
   }: {
     saveState?: DocumentSaveState;
     documentDiskChangeState?: "clean" | "changed" | "conflict" | "paused";
+    autosaveDeadline?: number | null;
   } = {}) {
     await act(async () => {
       root.render(
         <DocumentSaveStatusIndicator
           saveState={saveState}
           diskChangeState={documentDiskChangeState}
+          autosaveDeadline={autosaveDeadline}
         />,
       );
       await Promise.resolve();
@@ -336,18 +339,18 @@ describe("saving/saved status indicator (issue 2 fix)", () => {
   }
 
   it.each([
-    ["saved", "Saved", "document-save-status-saved"],
+    ["saved", "Saved", ""],
     ["saving", "Saving", "animate-spin"],
-    ["unsaved", "Unsaved changes", "animate-spin"],
+    ["unsaved", "Unsaved changes", ""],
     ["error", "Save failed", ""],
   ] satisfies Array<
     [DocumentSaveState, string, string]
-  >)("shows icon-only %s save status", async (saveState, label, iconClass) => {
+  >)("shows a visible %s save status", async (saveState, label, iconClass) => {
     await renderSaveStatus({ saveState });
 
     const status = getByTestId(container, "document-save-status");
     expect(status.getAttribute("aria-label")).toBe(label);
-    expect(status.textContent).toBe("");
+    expect(status.textContent).toBe(label);
     const icon = getByTestId(status, "document-save-status-icon");
     if (iconClass) {
       expect(icon.classList.contains(iconClass)).toBe(true);
@@ -359,12 +362,19 @@ describe("saving/saved status indicator (issue 2 fix)", () => {
     ["conflict", "Save conflict"],
     ["paused", "Autosave paused"],
   ] as const)("shows disk-blocked %s save status", async (state, label) => {
-    await renderSaveStatus({ documentDiskChangeState: state });
+    await renderSaveStatus({
+      saveState: "unsaved",
+      documentDiskChangeState: state,
+      autosaveDeadline: Date.now() + 10_000,
+    });
 
     const status = getByTestId(container, "document-save-status");
     expect(status.getAttribute("aria-label")).toBe(label);
-    expect(status.textContent).toBe("");
+    expect(status.textContent).toBe(label);
     expect(getByTestId(status, "document-save-status-icon")).not.toBeNull();
+    expect(
+      status.querySelector('[role="progressbar"][aria-hidden="false"]'), // selector-check-ignore: blocked saves must not expose an active countdown to assistive technology.
+    ).toBeNull();
   });
 
   it("renders save status in the fixed corner when handoff exists", async () => {
@@ -387,7 +397,7 @@ describe("saving/saved status indicator (issue 2 fix)", () => {
     expect(queryByTestId(header, "document-save-status")).toBeNull();
     expect(
       getByTestId(corner, "document-save-status").getAttribute("aria-label"),
-    ).toBe("Saved");
+    ).toBe("Saved in this browser");
   });
 
   it("renders save status in the fixed corner without handoff", async () => {
@@ -404,7 +414,7 @@ describe("saving/saved status indicator (issue 2 fix)", () => {
     expect(queryByTestId(header, "document-save-status")).toBeNull();
     expect(
       getByTestId(corner, "document-save-status").getAttribute("aria-label"),
-    ).toBe("Saved");
+    ).toBe("Saved in this browser");
   });
 
   it.each([

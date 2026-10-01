@@ -1,4 +1,4 @@
-import { expect, test, type Page } from "@playwright/test";
+import { expect, type Page, test } from "@playwright/test";
 import {
   createMarkdownProject,
   logE2eEvent,
@@ -106,6 +106,10 @@ test.describe("CriticMarkup review flows", () => {
         "# Layout Animation",
         "",
         "This paragraph has target text to review.",
+        ...Array.from(
+          { length: 24 },
+          (_, index) => `\nParagraph ${index + 1} extends the document.`,
+        ),
         "",
       ].join("\n"),
     );
@@ -123,10 +127,51 @@ test.describe("CriticMarkup review flows", () => {
       hasAnimatedReviewLayout(addSamples),
       JSON.stringify(addSamples),
     ).toBe(true);
+    expect(
+      addSamples.every((sample) => Math.abs(sample.toolsTranslateX) < 1),
+    ).toBe(true);
     await page
       .getByTestId("comment-rail-c1-editor")
       .fill("Clarify this phrase.");
     await page.getByTestId("comment-rail-c1-action-save").click();
+
+    const tools = page.getByTestId("document-floating-tools");
+    await expect(tools).toBeInViewport({ ratio: 1 });
+    await expect(page.getByTestId("document-editor-view-toggle")).toBeVisible();
+    const editorTextBox = await page
+      .getByTestId("rich-text-editor")
+      .locator(".ProseMirror")
+      .boundingBox();
+    if (!editorTextBox)
+      throw new Error("The editor text has no rendered bounds.");
+    expect(
+      await page
+        .getByTestId("document-floating-rail")
+        .evaluate((element) => getComputedStyle(element).position),
+    ).toBe("fixed");
+    const toolsBeforeScroll = await tools.boundingBox();
+    const scrollTop = await page
+      .getByTestId("document-workspace")
+      .evaluate((element) => {
+        element.scrollTop = 250;
+        return element.scrollTop;
+      });
+    expect(scrollTop).toBeGreaterThan(0);
+    const toolsAfterScroll = await tools.boundingBox();
+    if (!toolsBeforeScroll || !toolsAfterScroll) {
+      throw new Error("The document tools have no rendered bounds.");
+    }
+    expect(toolsAfterScroll.x + toolsAfterScroll.width).toBeLessThanOrEqual(
+      editorTextBox.x,
+    );
+    expect(
+      Math.abs(toolsAfterScroll.x - toolsBeforeScroll.x),
+    ).toBeLessThanOrEqual(1);
+    expect(
+      Math.abs(toolsAfterScroll.y - toolsBeforeScroll.y),
+    ).toBeLessThanOrEqual(1);
+    await expect(tools).toBeInViewport({ ratio: 1 });
+    await expect(page.getByTestId("document-editor-view-toggle")).toBeVisible();
 
     await page.getByTestId("comment-rail-c1-action-delete-thread").waitFor();
     const removeSamples = await sampleReviewLayoutAnimation(
@@ -138,11 +183,16 @@ test.describe("CriticMarkup review flows", () => {
       hasAnimatedReviewLayout(removeSamples),
       JSON.stringify(removeSamples),
     ).toBe(true);
+    expect(
+      removeSamples.every((sample) => Math.abs(sample.toolsTranslateX) < 1),
+    ).toBe(true);
 
     logE2eEvent("criticmarkup.layout-animation", {
       file: "layout-animation.md",
       addSamples,
       removeSamples,
+      toolsBeforeScroll,
+      toolsAfterScroll,
     });
   });
 
@@ -223,9 +273,8 @@ test.describe("CriticMarkup review flows", () => {
 
 type ReviewLayoutAnimationSample = {
   shellAnimating: boolean;
-  headerAnimating: boolean;
   shellTranslateX: number;
-  headerTranslateX: number;
+  toolsTranslateX: number;
 };
 
 async function sampleReviewLayoutAnimation(page: Page, actionTestId: string) {
@@ -250,18 +299,15 @@ async function sampleReviewLayoutAnimation(page: Page, actionTestId: string) {
             const shell = document.querySelector(
               '[data-testid="document-page-shell"]',
             );
-            const header = document.querySelector(
-              '[data-testid="document-page-header"]',
+            const tools = document.querySelector(
+              '[data-testid="document-floating-tools"]',
             );
             samples.push({
               shellAnimating:
                 shell instanceof HTMLElement &&
                 shell.classList.contains("review-layout-grid--animating"),
-              headerAnimating:
-                header instanceof HTMLElement &&
-                header.classList.contains("review-layout-grid--animating"),
               shellTranslateX: readTranslateX(shell),
-              headerTranslateX: readTranslateX(header),
+              toolsTranslateX: readTranslateX(tools),
             });
             if (performance.now() - start < 500) requestAnimationFrame(sample);
             else resolve(samples);
@@ -284,10 +330,6 @@ async function sampleReviewLayoutAnimation(page: Page, actionTestId: string) {
 
 function hasAnimatedReviewLayout(samples: ReviewLayoutAnimationSample[]) {
   return samples.some(
-    (sample) =>
-      sample.shellAnimating &&
-      sample.headerAnimating &&
-      Math.abs(sample.shellTranslateX) > 1 &&
-      Math.abs(sample.headerTranslateX) > 1,
+    (sample) => sample.shellAnimating && Math.abs(sample.shellTranslateX) > 1,
   );
 }

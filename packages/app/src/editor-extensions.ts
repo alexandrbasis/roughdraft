@@ -196,7 +196,7 @@ function collectCriticChangeRanges(doc: ProseMirrorNode, changeId: string) {
   if (!markType) return ranges;
 
   doc.descendants((node, pos) => {
-    if (!node.isText) return;
+    if (!node.isText && node.type.name !== "hardBreak") return;
 
     const mark = node.marks.find(
       (candidate) =>

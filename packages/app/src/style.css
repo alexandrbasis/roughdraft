@@ -826,24 +826,92 @@
   --code-block-foreground: oklch(0.985 0 0);
 }
 
-@keyframes document-save-status-saved-fade {
-  0%,
-  20% {
-    opacity: 1;
-  }
+.document-workspace {
+  padding-inline: 4rem;
+}
 
-  100% {
-    opacity: 0;
+/* Keep the tools outside the animated document grid and the comment rail. */
+.document-floating-rail {
+  position: fixed;
+  top: 4rem;
+  left: max(10px, calc((100vw - 56rem) / 2 - 3.5rem));
+  z-index: 45;
+  display: flex;
+  flex-direction: column;
+  gap: 0.75rem;
+  width: 3.25rem;
+  max-height: calc(100dvh - 9rem);
+  overflow-x: hidden;
+  overflow-y: auto;
+  overscroll-behavior: contain;
+  scrollbar-width: thin;
+  scrollbar-color: var(--border) transparent;
+}
+
+.document-floating-tools {
+  display: flex;
+  flex: 0 0 auto;
+  flex-direction: column;
+  gap: 0.75rem;
+  width: 2.75rem;
+  padding: 3px;
+  border: 1px solid var(--border);
+  border-radius: 0.75rem;
+  background: var(--card);
+  color: var(--muted-foreground);
+  box-shadow: 0 4px 20px rgb(0 0 0 / 7%);
+}
+
+.document-version-legend-host {
+  width: 2.75rem;
+}
+
+.document-version-legend-host:empty {
+  display: none;
+}
+
+.document-tools-group {
+  display: flex;
+  flex-direction: column;
+  gap: 0.25rem;
+}
+
+.document-tool-button {
+  display: inline-flex;
+  flex: 0 0 auto;
+  align-items: center;
+  justify-content: center;
+  width: 2.25rem;
+  height: 2.25rem;
+  padding: 0;
+  border-radius: 0.5rem;
+}
+
+.document-tool-button:hover,
+.document-tool-button[data-popup-open] {
+  background: var(--accent);
+  color: var(--accent-foreground);
+}
+
+@media (min-width: 1100px) {
+  [data-document-has-comments="true"] .document-floating-rail {
+    left: max(10px, calc((100vw - 76rem) / 2 - 3.5rem));
   }
 }
 
-.document-save-status-saved {
-  animation: document-save-status-saved-fade 2s ease-out forwards;
+@media (max-width: 639.98px) {
+  .document-workspace {
+    padding-inline: 3.75rem 0.75rem;
+  }
+
+  .document-floating-rail {
+    left: 6px;
+  }
 }
 
 /*
- * Review layout grid: a single document column that rests centered (no
- * comments) or shifted-left with a review rail (comments present).
+ * Keep the sheet centered when there is room for a rail on its right. Smaller
+ * desktops center the entire composition so both sheet and comments fit.
  *
  * The visible motion is FLIP-driven by useReviewLayoutShiftAnimation. The grid
  * moves to its next resting layout immediately, then a temporary inverse
@@ -856,6 +924,7 @@
   --review-layout-shift-x: 0px;
   display: flex;
   flex-direction: column;
+  align-items: center;
   gap: 1.5rem;
   transform: translateX(var(--review-layout-shift-x));
 }
@@ -887,6 +956,26 @@
   }
 }
 
+/* 56rem paper + two 20rem side spaces + 8rem viewport insets. The empty left
+ * column balances the comment rail, including when comments are below the fold. */
+@media (min-width: 1664px) {
+  .review-layout-grid:not(.review-layout-grid--centered) {
+    grid-template-columns: 18rem minmax(0, 56rem) 18rem;
+  }
+
+  .review-layout-grid:not(.review-layout-grid--centered) > .review-layout-main {
+    grid-column: 2;
+  }
+
+  .review-layout-grid:not(.review-layout-grid--centered) > .review-layout-rail {
+    grid-column: 3;
+  }
+
+  [data-document-has-comments="true"] .document-floating-rail {
+    left: max(10px, calc((100vw - 56rem) / 2 - 3.5rem));
+  }
+}
+
 .review-layout-grid.review-layout-grid--animating {
   transition: transform 180ms cubic-bezier(0.4, 0, 0.2, 1);
   will-change: transform;
@@ -909,16 +998,16 @@
     inset: auto 0 0;
     z-index: 40;
     display: flex;
-    padding: 0 2rem calc(4rem + env(safe-area-inset-bottom, 0px));
+    padding: 0 0.75rem calc(4rem + env(safe-area-inset-bottom, 0px)) 3.75rem;
     pointer-events: none;
   }
 
   .document-comment-rail--docked {
     position: fixed;
     bottom: calc(4rem + env(safe-area-inset-bottom, 0px));
-    left: 0;
+    left: 3.75rem;
     z-index: 40;
-    width: min(100%, 46.5rem);
+    width: min(calc(100% - 4.5rem), 46.5rem);
     max-height: min(45dvh, 26rem);
     overflow-y: auto;
     overscroll-behavior: contain;
@@ -932,7 +1021,7 @@
 
 @media (min-width: 640px) and (max-width: 1099.98px) {
   .document-comment-dock {
-    padding-inline: 3rem;
+    padding-inline: 4rem;
   }
 }
 
@@ -960,12 +1049,9 @@
   background: var(--card);
 }
 
-[data-document-embed="true"] .document-page-header {
-  padding-inline: 1rem;
-}
-
 [data-document-embed="true"] .document-content-card {
   min-height: calc(100dvh - 5rem);
+  padding-left: 4.75rem;
   border: 0;
   border-radius: 0;
   box-shadow: none;

@@ -7,6 +7,7 @@ import { spawn, spawnSync } from "node:child_process";
 import { fileURLToPath } from "node:url";
 import { setTimeout as sleep } from "node:timers/promises";
 import {
+  extractRoughdraftReviewIndex,
   type RfmDiagnostic,
   validateRoughdraftMarkdown,
 } from "@roughdraft/rfm";
@@ -53,6 +54,8 @@ const KNOWN_COMMANDS = [
   "status",
   "stop",
   "watch",
+  "read",
+  "submit",
   "history",
   "ack",
   "mcp",
@@ -178,6 +181,8 @@ interface ParsedCli {
 }
 
 interface ParsedCommandOptions {
+  from?: string;
+  expectedVersion?: string;
   consumerId?: string;
   received?: boolean;
   all: boolean;
@@ -307,6 +312,7 @@ function parseCommandOptions(
     allowPort?: boolean;
     allowWatch?: boolean;
     allowAck?: boolean;
+    allowSubmit?: boolean;
   },
 ): ParsedCommandOptions {
   const parsed: ParsedCommandOptions = {
@@ -337,6 +343,31 @@ function parseCommandOptions(
 
     if (arg === "--json") {
       parsed.json = true;
+      continue;
+    }
+
+    if (arg === "--from" || arg.startsWith("--from=")) {
+      if (!options.allowSubmit) throw new Error("Unknown flag: --from");
+      const value =
+        arg === "--from" ? args[++index] : arg.slice("--from=".length);
+      if (!value)
+        throw new Error("--from requires a file path or - for stdin.");
+      parsed.from = value;
+      continue;
+    }
+
+    if (arg === "--expected-version" || arg.startsWith("--expected-version=")) {
+      if (!options.allowSubmit)
+        throw new Error("Unknown flag: --expected-version");
+      const value =
+        arg === "--expected-version"
+          ? args[++index]
+          : arg.slice("--expected-version=".length);
+      if (!value)
+        throw new Error(
+          "--expected-version requires the version returned by read.",
+        );
+      parsed.expectedVersion = value;
       continue;
     }
 
@@ -921,6 +952,10 @@ function printHelp(log: (message: string) => void) {
   log("  status             Show server status");
   log("  stop               Stop the managed background server");
   log("  watch <path>       Wait for a Done Reviewing event");
+  log("  read <path>        Read the saved document and live review state");
+  log(
+    "  submit <path>      Save a complete agent edition and hand it to review",
+  );
   log(
     "  history <path>     Show review rounds, snapshots, and acknowledgements",
   );
@@ -1105,6 +1140,48 @@ function printCommandHelp(
         : "Marks an event processed by this consumer. Use --received to record receipt only.",
     );
     log("  --json               Print machine-readable output");
+    log("  --state-file <path>   Server state file");
+    log("  --state-dir <dir>     Directory containing server.json");
+    return;
+  }
+
+  if (command === "read") {
+    log("Usage:");
+    log("  roughdraft read <path> [--json]");
+    log("");
+    log(
+      "Reads saved Markdown, feedback, completed versions, and active editing state without opening a review.",
+    );
+    log(
+      "Recovery drafts and checkpoints are reported separately from saved content.",
+    );
+    log(
+      "Requires a running local Roughdraft server; remote sessions are not supported.",
+    );
+    log(
+      "  --json               Include full content and recovery data as JSON",
+    );
+    log("  --state-file <path>   Server state file");
+    log("  --state-dir <dir>     Directory containing server.json");
+    return;
+  }
+
+  if (command === "submit") {
+    log("Usage:");
+    log(
+      "  roughdraft submit <path> --from <file|-> --expected-version <read.version> [--json]",
+    );
+    log("");
+    log(
+      "Conditionally saves complete Markdown and hands the agent edition to review.",
+    );
+    log(
+      "Read the document first and use its JSON version; conflicts require a fresh read.",
+    );
+    log("Requires a running local server and an existing Markdown document.");
+    log("  --from <file|->       Read the new Markdown from a file or stdin");
+    log("  --expected-version   SHA-256 version from roughdraft read --json");
+    log("  --json               Print the saved result as JSON");
     log("  --state-file <path>   Server state file");
     log("  --state-dir <dir>     Directory containing server.json");
     return;
@@ -2366,6 +2443,53 @@ interface ReviewHistoryPayload {
   acknowledgements: ReviewAcknowledgement[];
 }
 
+interface ReviewDocumentPayload {
+  documentPath: string;
+  content: string;
+  version: string;
+  editingState: "editing" | "awaiting-review" | "completed";
+  iterations: Array<{
+    id: string;
+    number: number;
+    actor: string;
+    author?: string;
+    createdAt: string;
+    completedAt: string | null;
+  }>;
+  currentIteration: { number: number; actor: string; startedAt: string } | null;
+  drafts: unknown[];
+  checkpoints: unknown[];
+  snapshots: unknown[];
+}
+
+async function getReviewDocument(
+  fetchImpl: typeof fetch,
+  serverUrl: string,
+  documentPath: string,
+): Promise<ReviewDocumentPayload> {
+  const url = new URL("/api/reviews/document", serverUrl);
+  url.searchParams.set("documentPath", documentPath);
+  const payload = (await requestReviewApi(
+    fetchImpl,
+    url,
+  )) as ReviewDocumentPayload;
+  if (
+    !payload ||
+    typeof payload.documentPath !== "string" ||
+    typeof payload.content !== "string" ||
+    typeof payload.version !== "string" ||
+    !["editing", "awaiting-review", "completed"].includes(
+      payload.editingState,
+    ) ||
+    !Array.isArray(payload.iterations) ||
+    !Array.isArray(payload.drafts) ||
+    !Array.isArray(payload.checkpoints) ||
+    !Array.isArray(payload.snapshots)
+  )
+    throw new Error("Roughdraft returned an invalid document read response.");
+  return payload;
+}
+
 export async function getReviewHistory(
   fetchImpl: typeof fetch,
   serverUrl: string,
@@ -2990,6 +3114,168 @@ export async function runCli(
         `Stopped Roughdraft at ${buildPublicBaseUrl(stopResult.persistedState.port)}.`,
       );
       return 0;
+    }
+
+    if (command === "submit") {
+      let options: ParsedCommandOptions;
+      try {
+        options = parseCommandOptions(rest, { allowSubmit: true });
+        if (options.help) {
+          printCommandHelp(command, deps.log);
+          return 0;
+        }
+        if (
+          options.positionals.length !== 1 ||
+          !options.from ||
+          !options.expectedVersion ||
+          !/^[a-f0-9]{64}$/.test(options.expectedVersion)
+        )
+          throw new Error(
+            "Usage: roughdraft submit <path> --from <file|-> --expected-version <read.version> [--json]",
+          );
+      } catch (error) {
+        deps.error(error instanceof Error ? error.message : "Invalid usage.");
+        return USAGE_ERROR;
+      }
+      deps = applyCliEnvOverrides(deps, options);
+      if (deps.env.ROUGHDRAFT_HOST?.trim()) {
+        deps.error(
+          "roughdraft submit requires a local server; remote document sessions are not supported.",
+        );
+        return 1;
+      }
+      try {
+        const server = await findReusableServer(deps);
+        if (!server)
+          throw new Error(
+            "Roughdraft is not running. Start it before submitting a document.",
+          );
+        const documentPath = path.resolve(
+          deps.cwd,
+          options.positionals[0] ?? "",
+        );
+        const content =
+          options.from === "-"
+            ? fs.readFileSync(0, "utf8")
+            : fs.readFileSync(path.resolve(deps.cwd, options.from), "utf8");
+        const url = new URL("/api/reviews/submit", server.url);
+        url.searchParams.set("projectPath", path.dirname(documentPath));
+        url.searchParams.set("path", path.basename(documentPath));
+        const response = await deps.fetchImpl(url, {
+          method: "POST",
+          headers: { "Content-Type": "application/json" },
+          body: JSON.stringify({
+            content,
+            expectedVersion: options.expectedVersion,
+          }),
+          signal: AbortSignal.timeout(15_000),
+        });
+        const payload = (await response.json()) as {
+          error?: string;
+          content?: string;
+          version?: string;
+          editingState?: string;
+          route?: string;
+          retried?: boolean;
+          documentPath?: string;
+        };
+        if (!response.ok)
+          throw new Error(
+            payload.error ?? `Submit failed (HTTP ${response.status}).`,
+          );
+        if (!payload.retried && payload.route) {
+          await sendOpenRequestToExistingWindow(
+            deps,
+            server.url,
+            new URL(payload.route, server.url).toString(),
+            payload.documentPath ?? documentPath,
+          );
+        }
+        if (parsed.global.json || options.json) emitJson(deps.log, payload);
+        else {
+          deps.log(`Submitted: ${documentPath}`);
+          deps.log(`Version: ${payload.version}`);
+          deps.log(`Review state: ${payload.editingState}`);
+          if (payload.route) deps.log(`Review route: ${payload.route}`);
+        }
+        return 0;
+      } catch (error) {
+        deps.error(error instanceof Error ? error.message : "Submit failed.");
+        return 1;
+      }
+    }
+
+    if (command === "read") {
+      let options: ParsedCommandOptions;
+      try {
+        options = parseCommandOptions(rest, {});
+        if (options.help) {
+          printCommandHelp(command, deps.log);
+          return 0;
+        }
+        if (options.positionals.length !== 1)
+          throw new Error("Usage: roughdraft read <path> [--json]");
+      } catch (error) {
+        deps.error(error instanceof Error ? error.message : "Invalid usage.");
+        return USAGE_ERROR;
+      }
+      deps = applyCliEnvOverrides(deps, options);
+      if (deps.env.ROUGHDRAFT_HOST?.trim()) {
+        deps.error(
+          "roughdraft read requires a local server; remote document sessions are not supported.",
+        );
+        return 1;
+      }
+      try {
+        const server = await findReusableServer(deps);
+        if (!server)
+          throw new Error(
+            "Roughdraft is not running. Start it before reading a document.",
+          );
+        const documentPath = path.resolve(
+          deps.cwd,
+          options.positionals[0] ?? "",
+        );
+        const document = await getReviewDocument(
+          deps.fetchImpl,
+          server.url,
+          documentPath,
+        );
+        const reviewIndex = extractRoughdraftReviewIndex(document.content);
+        if (parsed.global.json || options.json) {
+          emitJson(deps.log, { ...document, reviewIndex });
+        } else {
+          deps.log(`Document: ${document.documentPath}`);
+          deps.log(`Review state: ${document.editingState}`);
+          deps.log(
+            `Completed versions: ${document.iterations.filter((iteration) => iteration.completedAt !== null).length}`,
+          );
+          for (const iteration of document.iterations)
+            deps.log(
+              iteration.completedAt === null
+                ? `  V${iteration.number}: ${iteration.author ?? iteration.actor}, first seen ${iteration.createdAt}; completion unknown`
+                : `  V${iteration.number}: ${iteration.author ?? iteration.actor}, completed ${iteration.completedAt}`,
+            );
+          if (document.currentIteration)
+            deps.log(
+              `Current iteration: V${document.currentIteration.number} (${document.currentIteration.actor}, in progress since ${document.currentIteration.startedAt})`,
+            );
+          deps.log(
+            `Saved feedback: ${reviewIndex.summary.comments} comment(s), ${reviewIndex.summary.replies} reply/replies, ${reviewIndex.summary.suggestions} suggestion(s), ${reviewIndex.summary.unresolved} unresolved`,
+          );
+          deps.log(
+            `Recovery: ${document.drafts.length} draft(s), ${document.checkpoints.length} checkpoint(s), ${document.snapshots.length} snapshot(s)`,
+          );
+          deps.log("Saved Markdown:");
+          deps.log(document.content);
+        }
+        return 0;
+      } catch (error) {
+        deps.error(
+          error instanceof Error ? error.message : "Document read failed.",
+        );
+        return 1;
+      }
     }
 
     if (command === "history" || command === "ack") {

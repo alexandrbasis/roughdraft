@@ -20,13 +20,13 @@ afterEach(() => {
   app.locals.reviewDatabase.close();
   fs.rmSync(directory, { recursive: true, force: true });
 });
-const revisions = async () =>
+const checkpoints = async () =>
   (
     await request(app)
       .get("/api/reviews/revisions")
       .query({ documentPath: file })
       .expect(200)
-  ).body.revisions;
+  ).body.checkpoints;
 const load = () =>
   request(app)
     .get("/api/markdown-file")
@@ -39,7 +39,7 @@ it("records ordered external revisions and reverts, deduplicates reloads, and pe
   fs.writeFileSync(file, "B\n");
   await load();
   fs.writeFileSync(file, "A\n");
-  const before = await revisions();
+  const before = await checkpoints();
   expect(
     before.map((r: { number: number; content: string; source: string }) => [
       r.number,
@@ -55,7 +55,7 @@ it("records ordered external revisions and reverts, deduplicates reloads, and pe
   expect(before[0].version).toBe(before[2].version);
   app.locals.reviewDatabase.close();
   app = createApp({ stateDirectory: path.join(directory, "state") }).app;
-  expect(await revisions()).toEqual(before);
+  expect(await checkpoints()).toEqual(before);
 });
 
 it("captures edits during polling even if no content GET happens between them", async () => {
@@ -69,7 +69,7 @@ it("captures edits during polling even if no content GET happens between them", 
   await poll();
   fs.writeFileSync(file, "C\n");
   expect(
-    (await revisions()).map((r: { content: string }) => r.content),
+    (await checkpoints()).map((r: { content: string }) => r.content),
   ).toEqual(["A\n", "B\n", "C\n"]);
 });
 
@@ -100,7 +100,7 @@ it("seeds registration and page reads; records successful saves and completion, 
       overallComment: "Needs detail",
     })
     .expect(201);
-  const result = await revisions();
+  const result = await checkpoints();
   expect(result.map((r: { source: string }) => r.source)).toEqual([
     "baseline",
     "review",

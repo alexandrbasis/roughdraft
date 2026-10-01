@@ -217,7 +217,7 @@ test.describe("stale writes", () => {
       "This file changed on disk while you have unsaved edits.",
     );
     await expect(conflictNotice).toContainText(
-      "Autosave is paused so your draft will not overwrite those changes.",
+      "Both copies will remain available for recovery.",
     );
     await expect(page.getByTestId("file-conflict-action-reload")).toBeVisible();
     await expect(

@@ -60,13 +60,28 @@ export interface DocumentRevision {
   createdAt: string;
 }
 
+export interface CompletedIteration extends DocumentRevision {
+  actor: "agent" | "user" | "unknown";
+  author?: string;
+  completedAt: string | null;
+}
+
+export type DocumentEditingState = "editing" | "awaiting-review" | "completed";
+
+interface IterationState {
+  editingState: DocumentEditingState;
+  startedAt?: string;
+}
+
 interface PendingWrite {
   id: string;
   documentPath: string;
   before: string;
   after: string;
+  actor?: "agent";
   completion?: ReviewCompletedEventInput;
   roundId?: string;
+  repeatCompletion?: boolean;
   createdAt: string;
 }
 
@@ -98,11 +113,12 @@ export class ReviewDatabase {
       const version = this.db.prepare("PRAGMA user_version").get() as {
         user_version: number;
       };
-      if (version.user_version > 1)
+      if (version.user_version > 2)
         throw new ReviewDatabaseError(
           "Roughdraft database was created by a newer version.",
         );
       this.db.exec(`
+        BEGIN IMMEDIATE;
         CREATE TABLE IF NOT EXISTS metadata (key TEXT PRIMARY KEY, value TEXT NOT NULL);
         CREATE TABLE IF NOT EXISTS documents (document_path TEXT PRIMARY KEY, route TEXT NOT NULL UNIQUE, payload TEXT NOT NULL);
         CREATE TABLE IF NOT EXISTS rounds (id TEXT PRIMARY KEY, document_path TEXT NOT NULL, opened_at TEXT NOT NULL, status TEXT NOT NULL, payload TEXT NOT NULL);
@@ -112,11 +128,17 @@ export class ReviewDatabase {
         CREATE TABLE IF NOT EXISTS acknowledgements (sequence INTEGER NOT NULL REFERENCES events(sequence), consumer_id TEXT NOT NULL, status TEXT NOT NULL CHECK(status IN ('received','processed')), updated_at TEXT NOT NULL, PRIMARY KEY(sequence, consumer_id));
         CREATE TABLE IF NOT EXISTS snapshots (id TEXT PRIMARY KEY, document_path TEXT NOT NULL, version TEXT NOT NULL, content TEXT NOT NULL, created_at TEXT NOT NULL, reason TEXT NOT NULL, UNIQUE(document_path, version));
         CREATE TABLE IF NOT EXISTS document_revisions (id TEXT PRIMARY KEY, document_path TEXT NOT NULL, number INTEGER NOT NULL, content TEXT NOT NULL, version TEXT NOT NULL, source TEXT NOT NULL CHECK(source IN ('baseline','external','review')), created_at TEXT NOT NULL, UNIQUE(document_path, number));
+        CREATE TABLE IF NOT EXISTS document_iterations (id TEXT PRIMARY KEY, document_path TEXT NOT NULL, number INTEGER NOT NULL, content TEXT NOT NULL, version TEXT NOT NULL, source TEXT NOT NULL CHECK(source IN ('baseline','external','review')), actor TEXT NOT NULL CHECK(actor IN ('agent','user','unknown')), author TEXT, created_at TEXT NOT NULL, completed_at TEXT, UNIQUE(document_path, number));
+        CREATE TABLE IF NOT EXISTS document_iteration_state (document_path TEXT PRIMARY KEY, payload TEXT NOT NULL);
         CREATE TABLE IF NOT EXISTS file_writes (id TEXT PRIMARY KEY, document_path TEXT NOT NULL, status TEXT NOT NULL, payload TEXT NOT NULL);
         CREATE TABLE IF NOT EXISTS drafts (document_path TEXT NOT NULL, tab_id TEXT NOT NULL, revision TEXT NOT NULL, updated_at REAL NOT NULL, deleted INTEGER NOT NULL DEFAULT 0, payload TEXT NOT NULL, PRIMARY KEY(document_path, tab_id));
-        PRAGMA user_version=1;
+        COMMIT;
       `);
       this.importLegacy(stateDirectory);
+      this.transaction(() => {
+        if (version.user_version === 1) this.seedLegacyIterations();
+        this.db.exec("PRAGMA user_version=2");
+      });
       this.recoverWrites();
     } catch (error) {
       this.db.close();
@@ -137,6 +159,152 @@ export class ReviewDatabase {
     } catch (error) {
       this.db.exec("ROLLBACK");
       throw error;
+    }
+  }
+
+  private iterationState(documentPath: string): IterationState | null {
+    const row = this.db
+      .prepare(
+        "SELECT payload FROM document_iteration_state WHERE document_path=?",
+      )
+      .get(documentPath);
+    return row ? decode<IterationState>(row) : null;
+  }
+
+  private setIterationState(
+    documentPath: string,
+    editingState: DocumentEditingState,
+  ): void {
+    const previous = this.iterationState(documentPath);
+    const state: IterationState = {
+      editingState,
+      ...(editingState === "editing"
+        ? { startedAt: previous?.startedAt ?? new Date().toISOString() }
+        : {}),
+    };
+    this.db
+      .prepare(
+        "INSERT INTO document_iteration_state VALUES(?,?) ON CONFLICT(document_path) DO UPDATE SET payload=excluded.payload",
+      )
+      .run(documentPath, JSON.stringify(state));
+  }
+
+  private latestIteration(
+    documentPath: string,
+  ): CompletedIteration | undefined {
+    return this.db
+      .prepare(
+        "SELECT id,number,content,version,source,actor,author,created_at AS createdAt,completed_at AS completedAt FROM document_iterations WHERE document_path=? ORDER BY number DESC LIMIT 1",
+      )
+      .get(documentPath) as unknown as CompletedIteration | undefined;
+  }
+
+  private completeIteration(
+    documentPath: string,
+    content: string,
+    actor: CompletedIteration["actor"],
+    author?: string,
+    force = false,
+    observedAt?: string,
+  ): CompletedIteration {
+    const latest = this.latestIteration(documentPath);
+    if (
+      actor === "agent" &&
+      latest?.actor === "unknown" &&
+      latest.completedAt === null &&
+      latest.content === content
+    ) {
+      const completedAt = new Date().toISOString();
+      this.db
+        .prepare(
+          "UPDATE document_iterations SET actor='agent',author=?,completed_at=? WHERE id=?",
+        )
+        .run(author ?? "Agent", completedAt, latest.id);
+      this.log("iteration-promoted", {
+        number: latest.number,
+        version: latest.version,
+      });
+      return {
+        ...latest,
+        actor: "agent",
+        author: author ?? "Agent",
+        completedAt,
+      };
+    }
+    if (!force && latest?.content === content) return latest;
+    const createdAt = observedAt ?? new Date().toISOString();
+    const completedAt = actor === "unknown" ? null : new Date().toISOString();
+    const iteration: CompletedIteration = {
+      id: randomUUID(),
+      number: (latest?.number ?? 0) + 1,
+      content,
+      version: hash(content),
+      source: !latest ? "baseline" : actor === "user" ? "review" : "external",
+      actor,
+      ...(author ? { author } : {}),
+      createdAt,
+      completedAt,
+    };
+    this.db
+      .prepare("INSERT INTO document_iterations VALUES(?,?,?,?,?,?,?,?,?,?)")
+      .run(
+        iteration.id,
+        documentPath,
+        iteration.number,
+        iteration.content,
+        iteration.version,
+        iteration.source,
+        iteration.actor,
+        author ?? null,
+        iteration.createdAt,
+        iteration.completedAt,
+      );
+    this.log("iteration-completed", {
+      number: iteration.number,
+      actor,
+      version: iteration.version,
+    });
+    return iteration;
+  }
+
+  private seedLegacyIterations(): void {
+    const rows = this.db
+      .prepare(
+        "SELECT document_path AS documentPath FROM document_revisions UNION SELECT document_path AS documentPath FROM documents",
+      )
+      .all() as { documentPath: string }[];
+    for (const { documentPath } of rows) {
+      const checkpoints = this.db
+        .prepare(
+          "SELECT content,created_at AS createdAt FROM document_revisions WHERE document_path=? ORDER BY number",
+        )
+        .all(documentPath) as { content: string; createdAt: string }[];
+      for (const checkpoint of checkpoints)
+        this.snapshot(
+          documentPath,
+          checkpoint.content,
+          "observed-revision",
+          checkpoint.createdAt,
+        );
+      if (this.latestIteration(documentPath)) continue;
+      const latest = checkpoints.at(-1);
+      let content = latest?.content;
+      if (content === undefined) {
+        try {
+          content = fs.readFileSync(documentPath, "utf8");
+        } catch {
+          // Missing legacy documents remain in their original registry state.
+        }
+      }
+      if (content !== undefined)
+        this.completeIteration(
+          documentPath,
+          content,
+          "unknown",
+          "Original",
+          false,
+          latest?.createdAt,
+        );
     }
   }
 
@@ -234,11 +402,37 @@ export class ReviewDatabase {
       this.upsertRecord(record);
       if (opening) {
         const content = fs.readFileSync(record.documentPath, "utf8");
-        this.recordRevision(record.documentPath, content, "external");
+        // Keep the established opened-snapshot label when this is also the
+        // first observed file version. The checkpoint insert deduplicates it.
+        this.snapshot(record.documentPath, content, "opened");
+        const checkpoint = this.recordRevision(
+          record.documentPath,
+          content,
+          "external",
+        );
+        // Opening hands the current agent edition to the human. A pending
+        // human edit belongs to that review, even if the file has autosaved.
+        const previous = this.latestIteration(record.documentPath);
+        const wasEditing =
+          this.iterationState(record.documentPath)?.editingState === "editing";
+        const externalEdition =
+          checkpoint.source === "external" && previous?.content !== content;
+        const provisionalHandoff =
+          previous?.actor === "unknown" &&
+          previous.completedAt === null &&
+          previous.content === content;
+        if (!wasEditing || externalEdition || provisionalHandoff) {
+          this.completeIteration(
+            record.documentPath,
+            content,
+            "agent",
+            "Agent",
+          );
+          this.setIterationState(record.documentPath, "awaiting-review");
+        }
         // Multiple agents opening a still-pending document join the same round.
         const pending = this.currentRound(record.documentPath);
         if (!pending || pending.status === "completed") {
-          this.snapshot(record.documentPath, content, "opened");
           this.insertRound({
             id: randomUUID(),
             documentPath: record.documentPath,
@@ -309,7 +503,11 @@ export class ReviewDatabase {
           ? decode<ReviewRound>(roundRow)
           : null
         : this.currentRound(canonical(event.documentPath));
-      if (write?.roundId && round?.status === "completed")
+      if (
+        write?.roundId &&
+        round?.status === "completed" &&
+        !write.repeatCompletion
+      )
         throw new ReviewDatabaseError(
           "This review round is already completed.",
         );
@@ -338,7 +536,7 @@ export class ReviewDatabase {
           completionEvent: event,
         });
       }
-      if (round)
+      if (round && !write?.repeatCompletion)
         this.insertRound({
           ...round,
           status: "completed",
@@ -347,7 +545,16 @@ export class ReviewDatabase {
           eventSequence: event.sequence,
         });
       if (writeId) this.finishWriteInternal(writeId);
-      if (round)
+      if (!write?.repeatCompletion)
+        this.completeIteration(
+          canonical(event.documentPath),
+          fs.readFileSync(event.documentPath, "utf8"),
+          "user",
+          "User",
+          true,
+        );
+      this.setIterationState(canonical(event.documentPath), "completed");
+      if (round && !write?.repeatCompletion)
         this.db
           .prepare(
             "UPDATE file_writes SET status='superseded' WHERE status='pending' AND json_extract(payload,'$.roundId')=? AND json_extract(payload,'$.completion') IS NOT NULL",
@@ -395,6 +602,7 @@ export class ReviewDatabase {
     documentPath: string,
     content: string,
     reason: string,
+    createdAt = new Date().toISOString(),
   ): void {
     this.db
       .prepare("INSERT OR IGNORE INTO snapshots VALUES(?,?,?,?,?,?)")
@@ -403,7 +611,7 @@ export class ReviewDatabase {
         documentPath,
         hash(content),
         content,
-        new Date().toISOString(),
+        createdAt,
         reason,
       );
   }
@@ -412,6 +620,7 @@ export class ReviewDatabase {
     documentPath: string,
     content: string,
     completion?: ReviewCompletedEventInput,
+    actor?: "agent",
   ): string {
     documentPath = canonical(documentPath);
     const before = fs.readFileSync(documentPath, "utf8");
@@ -420,13 +629,22 @@ export class ReviewDatabase {
       documentPath,
       before,
       after: content,
+      ...(actor ? { actor } : {}),
       completion,
       createdAt: new Date().toISOString(),
     };
     this.transaction(() => {
+      if (completion && !this.latestIteration(documentPath))
+        this.completeIteration(documentPath, before, "unknown", "Original");
       if (completion) {
         let round = this.currentRound(documentPath);
-        if (!round || round.status === "completed") {
+        if (
+          round?.status === "completed" &&
+          content === before &&
+          this.latestIteration(documentPath)?.content === before
+        ) {
+          write.repeatCompletion = true;
+        } else if (!round || round.status === "completed") {
           round = {
             id: randomUUID(),
             documentPath,
@@ -438,8 +656,8 @@ export class ReviewDatabase {
         }
         write.roundId = round.id;
       }
-      this.recordRevision(documentPath, before, "external");
       this.snapshot(documentPath, before, "before-save");
+      this.recordRevision(documentPath, before, "external");
       this.snapshot(documentPath, content, "proposed-save");
       this.db
         .prepare("INSERT INTO file_writes VALUES(?,?,'pending',?)")
@@ -471,7 +689,24 @@ export class ReviewDatabase {
       throw new ReviewDatabaseError(
         "The file changed before the save was recorded.",
       );
-    this.recordRevision(write.documentPath, write.after, "review");
+    if (!write.completion && !this.latestIteration(write.documentPath))
+      this.completeIteration(
+        write.documentPath,
+        write.before,
+        "unknown",
+        "Original",
+      );
+    this.recordRevision(
+      write.documentPath,
+      write.after,
+      write.actor === "agent" ? "external" : "review",
+    );
+    if (write.actor === "agent") {
+      this.completeIteration(write.documentPath, write.after, "agent", "Agent");
+      this.setIterationState(write.documentPath, "awaiting-review");
+    } else if (!write.completion) {
+      this.setIterationState(write.documentPath, "editing");
+    }
     this.db
       .prepare(
         "UPDATE file_writes SET status='applied' WHERE id=? AND status='pending'",
@@ -570,6 +805,12 @@ export class ReviewDatabase {
         revision.source,
         revision.createdAt,
       );
+    this.snapshot(
+      documentPath,
+      content,
+      "observed-revision",
+      revision.createdAt,
+    );
     this.log("revision-recorded", {
       number: revision.number,
       version: revision.version,
@@ -586,6 +827,97 @@ export class ReviewDatabase {
       .all(canonical(documentPath)) as unknown as DocumentRevision[];
   }
 
+  completedIterations(documentPath: string): CompletedIteration[] {
+    documentPath = canonical(documentPath);
+    // Direct-path browser reviews have no handoff call. The first request
+    // presents the current bytes as an original edition without assigning an
+    // author to earlier checkpoints.
+    if (!this.latestIteration(documentPath) && fs.existsSync(documentPath)) {
+      this.transaction(() => {
+        if (!this.latestIteration(documentPath))
+          this.completeIteration(
+            documentPath,
+            fs.readFileSync(documentPath, "utf8"),
+            "unknown",
+            "Original",
+          );
+      });
+    }
+    return this.db
+      .prepare(
+        "SELECT id,number,content,version,source,actor,author,created_at AS createdAt,completed_at AS completedAt FROM document_iterations WHERE document_path=? ORDER BY number",
+      )
+      .all(documentPath) as unknown as CompletedIteration[];
+  }
+
+  documentEditingState(documentPath: string): DocumentEditingState {
+    documentPath = canonical(documentPath);
+    const explicit = this.iterationState(documentPath);
+    if (explicit) return explicit.editingState;
+    const record = this.db
+      .prepare("SELECT payload FROM documents WHERE document_path=?")
+      .get(documentPath);
+    return record && decode<ReviewRecord>(record).status === "completed"
+      ? "completed"
+      : "awaiting-review";
+  }
+
+  completeUnchangedAgentSubmission(
+    documentPath: string,
+    content: string,
+  ): void {
+    documentPath = canonical(documentPath);
+    this.transaction(() => {
+      this.completeIteration(documentPath, content, "agent", "Agent", true);
+      this.setIterationState(documentPath, "awaiting-review");
+    });
+  }
+
+  pendingAgentHandoffPaths(): string[] {
+    const records = new Map(
+      this.listRecords().map((record) => [record.documentPath, record]),
+    );
+    const paths = this.db
+      .prepare(
+        "SELECT document_path AS documentPath FROM document_iteration_state",
+      )
+      .all() as { documentPath: string }[];
+    return paths
+      .map(({ documentPath }) => documentPath)
+      .filter((documentPath) => {
+        if (!fs.existsSync(documentPath)) return false;
+        const latest = this.latestIteration(documentPath);
+        return (
+          latest?.actor === "agent" &&
+          latest.content === fs.readFileSync(documentPath, "utf8") &&
+          this.documentEditingState(documentPath) === "awaiting-review" &&
+          records.get(documentPath)?.status !== "pending"
+        );
+      });
+  }
+
+  currentIteration(documentPath: string, content: string) {
+    documentPath = canonical(documentPath);
+    if (this.documentEditingState(documentPath) !== "editing") return null;
+    return {
+      number: (this.latestIteration(documentPath)?.number ?? 0) + 1,
+      actor: "user" as const,
+      content,
+      version: hash(content),
+      startedAt:
+        this.iterationState(documentPath)?.startedAt ??
+        new Date().toISOString(),
+    };
+  }
+
+  recoveryPoints(documentPath: string) {
+    return this.db
+      .prepare(
+        "SELECT id,document_path AS documentPath,content,version,created_at AS createdAt,reason FROM snapshots WHERE document_path=? ORDER BY rowid DESC",
+      )
+      .all(canonical(documentPath));
+  }
+
   history(documentPath: string) {
     documentPath = canonical(documentPath);
     return {
@@ -595,11 +927,7 @@ export class ReviewDatabase {
         )
         .all(documentPath)
         .map((row) => decode<ReviewRound>(row)),
-      snapshots: this.db
-        .prepare(
-          "SELECT id,document_path AS documentPath,version,created_at AS createdAt,reason FROM snapshots WHERE document_path=? ORDER BY rowid DESC",
-        )
-        .all(documentPath),
+      snapshots: this.recoveryPoints(documentPath),
       acknowledgements: this.db
         .prepare(
           "SELECT a.sequence,a.consumer_id AS consumerId,a.status,a.updated_at AS updatedAt FROM acknowledgements a JOIN events e ON e.sequence=a.sequence WHERE e.document_path=? ORDER BY a.sequence DESC",
@@ -654,6 +982,16 @@ export class ReviewDatabase {
     )
       throw new ReviewDatabaseError("Invalid server draft.", 400);
     return this.transaction(() => {
+      const latest = this.latestIteration(documentPath);
+      const staleAfterCompletion =
+        this.documentEditingState(documentPath) === "completed" &&
+        latest?.completedAt !== null &&
+        latest?.completedAt !== undefined &&
+        draft.updatedAt < Date.parse(latest.completedAt);
+      if (staleAfterCompletion) {
+        this.snapshot(documentPath, draft.content, "browser-draft");
+        return { ...draft, documentPath };
+      }
       const previous = this.db
         .prepare(
           "SELECT revision,updated_at,deleted FROM drafts WHERE document_path=? AND tab_id=?",
@@ -668,6 +1006,13 @@ export class ReviewDatabase {
             (previous.revision !== draft.revision || previous.deleted)))
       )
         throw new ReviewDatabaseError("A newer draft revision already exists.");
+      if (!this.latestIteration(documentPath))
+        this.completeIteration(
+          documentPath,
+          fs.readFileSync(documentPath, "utf8"),
+          "unknown",
+          "Original",
+        );
       this.db
         .prepare(
           "INSERT INTO drafts VALUES(?,?,?,?,0,?) ON CONFLICT(document_path,tab_id) DO UPDATE SET revision=excluded.revision,updated_at=excluded.updated_at,deleted=0,payload=excluded.payload",
@@ -679,6 +1024,11 @@ export class ReviewDatabase {
           draft.updatedAt,
           JSON.stringify(draft),
         );
+      if (
+        this.documentEditingState(documentPath) !== "completed" ||
+        this.latestIteration(documentPath)?.content !== draft.content
+      )
+        this.setIterationState(documentPath, "editing");
       return { ...draft, documentPath };
     });
   }
@@ -686,12 +1036,25 @@ export class ReviewDatabase {
   deleteDraft(documentPath: string, tabId: string, revision: string): boolean {
     documentPath = canonical(documentPath);
     // Retain the revision tombstone so a delayed retry cannot resurrect it.
-    const result = this.db
-      .prepare(
-        "UPDATE drafts SET deleted=1,payload='{}' WHERE document_path=? AND tab_id=? AND revision=? AND deleted=0",
-      )
-      .run(documentPath, tabId, revision);
-    return Number(result.changes) > 0;
+    return this.transaction(() => {
+      const row = this.db
+        .prepare(
+          "SELECT payload FROM drafts WHERE document_path=? AND tab_id=? AND revision=? AND deleted=0",
+        )
+        .get(documentPath, tabId, revision);
+      if (!row) return false;
+      this.snapshot(
+        documentPath,
+        decode<ServerDraft>(row).content,
+        "browser-draft",
+      );
+      const result = this.db
+        .prepare(
+          "UPDATE drafts SET deleted=1,payload='{}' WHERE document_path=? AND tab_id=? AND revision=? AND deleted=0",
+        )
+        .run(documentPath, tabId, revision);
+      return Number(result.changes) > 0;
+    });
   }
 
   private log(event: string, data: Record<string, unknown>): void {
@@ -722,7 +1085,7 @@ export function readStoredReviewRecords(
       user_version: number;
     };
     if (
-      version.user_version !== 1 ||
+      (version.user_version !== 1 && version.user_version !== 2) ||
       !db
         .prepare("SELECT value FROM metadata WHERE key='legacy-imported'")
         .get()

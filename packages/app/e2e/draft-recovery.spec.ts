@@ -291,7 +291,7 @@ test.describe("durable browser drafts", () => {
     await page.reload();
 
     await expect(page.getByTestId("draft-recovery-notice")).toContainText(
-      "Disk version changed",
+      "File changed while you were editing",
     );
     await expect(codeEditor(page)).toContainText("External disk version.");
     await expect(

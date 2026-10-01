@@ -1,10 +1,10 @@
 import fs from "node:fs";
 import path from "node:path";
 import {
-  expect,
-  test,
   type APIRequestContext,
+  expect,
   type Page,
+  test,
 } from "@playwright/test";
 import {
   createMarkdownProject,
@@ -23,14 +23,34 @@ interface Revision {
   version: string;
   source: "baseline" | "external" | "review";
   createdAt: string;
+  completedAt: string | null;
+  actor: "agent" | "user" | "unknown";
+  author?: string;
 }
 
-async function revisions(request: APIRequestContext, documentPath: string) {
+interface RecoveryPoint {
+  id: string;
+  content: string;
+  createdAt: string;
+  reason: string;
+}
+
+async function revisionHistory(
+  request: APIRequestContext,
+  documentPath: string,
+) {
   const response = await request.get("/api/reviews/revisions", {
     params: { documentPath },
   });
   expect(response.ok()).toBe(true);
-  return ((await response.json()) as { revisions: Revision[] }).revisions;
+  return (await response.json()) as {
+    revisions: Revision[];
+    recoveryPoints: RecoveryPoint[];
+  };
+}
+
+async function revisions(request: APIRequestContext, documentPath: string) {
+  return (await revisionHistory(request, documentPath)).revisions;
 }
 
 async function register(request: APIRequestContext, documentPath: string) {
@@ -46,6 +66,7 @@ async function changeOnDisk(
   content: string,
 ) {
   const documentPath = writeProjectFile(directory, "review.md", content);
+  await register(request, documentPath);
   await expect
     .poll(async () => (await revisions(request, documentPath)).at(-1)?.content)
     .toBe(content);
@@ -53,11 +74,20 @@ async function changeOnDisk(
 
 async function chooseRevision(page: Page, number: number | "all") {
   await page.getByTestId("revision-filter").click();
-  await page
-    .getByTestId(
-      number === "all" ? "revision-filter-all" : `revision-filter-${number}`,
-    )
-    .click();
+  await page.getByTestId("revision-filter-all").click();
+  if (number !== "all") {
+    const options = page
+      .getByTestId("revision-filter-popover")
+      .getByTestId(/^revision-filter-\d+$/);
+    for (const option of await options.all()) {
+      if (
+        (await option.getAttribute("data-testid")) !==
+        `revision-filter-${number}`
+      )
+        await option.click();
+    }
+  }
+  await page.keyboard.press("Escape");
 }
 
 test.describe("document revision highlights", () => {
@@ -136,16 +166,16 @@ test.describe("document revision highlights", () => {
     await register(request, documentPath);
     expect(
       (await revisions(request, documentPath)).map((item) => item.number),
-    ).toEqual([0]);
+    ).toEqual([1]);
     await changeOnDisk(request, directory, first);
     await changeOnDisk(request, directory, second);
     const saved = await revisions(request, documentPath);
     expect(
       saved.map(({ number, content, source }) => ({ number, content, source })),
     ).toEqual([
-      { number: 0, content: baseline, source: "baseline" },
-      { number: 1, content: first, source: "external" },
-      { number: 2, content: second, source: "external" },
+      { number: 1, content: baseline, source: "baseline" },
+      { number: 2, content: first, source: "external" },
+      { number: 3, content: second, source: "external" },
     ]);
     expect(
       saved.every((item) => item.id && item.version && item.createdAt),
@@ -168,16 +198,16 @@ test.describe("document revision highlights", () => {
         .filter({ hasText: "Second addition." }),
     ).toBeVisible();
 
-    await chooseRevision(page, 1);
+    await chooseRevision(page, 2);
     await expect(page.getByTestId("revision-highlight")).toHaveCount(1);
     await expect(page.getByTestId("revision-highlight")).toHaveAttribute(
       "data-revision-number",
-      "1",
+      "2",
     );
-    await chooseRevision(page, 2);
+    await chooseRevision(page, 3);
     await expect(page.getByTestId("revision-highlight")).toHaveAttribute(
       "data-revision-number",
-      "2",
+      "3",
     );
     await chooseRevision(page, "all");
     await expect(page.getByTestId("revision-highlight")).toHaveCount(2);
@@ -213,9 +243,12 @@ test.describe("document revision highlights", () => {
     await expect(page.getByTestId("rich-text-editor")).toContainText(
       "initial wording",
     );
-    await expect(page.getByTestId("revision-toolbar")).toContainText(
-      "Changes will appear after the next saved revision.",
+    await page.getByTestId("revision-filter").click();
+    await expect(page.getByTestId("revision-filter-popover")).toContainText(
+      "0 changes shown",
     );
+    await expect(page.getByTestId("revision-filter-latest")).toBeDisabled();
+    await page.keyboard.press("Escape");
 
     await changeOnDisk(request, directory, changed);
     await expect(page.getByTestId("rich-text-editor")).toContainText(
@@ -223,7 +256,7 @@ test.describe("document revision highlights", () => {
     );
     await expect(
       page.getByTestId("revision-highlight").filter({ hasText: "updated" }),
-    ).toHaveAttribute("data-revision-number", "1");
+    ).toHaveAttribute("data-revision-number", "2");
     expect(readProjectFile(directory, "review.md")).toBe(changed);
     logE2eEvent("revision-highlights.live-external-update", { observed: true });
   });
@@ -245,12 +278,12 @@ test.describe("document revision highlights", () => {
     const gamma = page
       .getByTestId("revision-highlight")
       .filter({ hasText: "gamma" });
-    await expect(gamma).toHaveAttribute("data-revision-number", "2");
-    await chooseRevision(page, 1);
+    await expect(gamma).toHaveAttribute("data-revision-number", "3");
+    await chooseRevision(page, 2);
     await expect(
       page.getByTestId("revision-highlight").filter({ hasText: "gamma" }),
     ).toHaveCount(0);
-    await chooseRevision(page, 2);
+    await chooseRevision(page, 3);
     await expect(gamma).toBeVisible();
     expect(readProjectFile(directory, "review.md")).toBe(latest);
   });
@@ -279,8 +312,8 @@ test.describe("document revision highlights", () => {
     const words = deleted.filter({ hasText: "fragile wording" });
     const paragraph = deleted.filter({ hasText: removedParagraph });
     await expect(deleted).toHaveCount(2);
-    await expect(words).toHaveAttribute("data-revision-number", "1");
-    await expect(paragraph).toHaveAttribute("data-revision-number", "2");
+    await expect(words).toHaveAttribute("data-revision-number", "2");
+    await expect(paragraph).toHaveAttribute("data-revision-number", "3");
     const paragraphSeparation = await paragraph.evaluate((element) => {
       const removedLines = element.firstElementChild?.getClientRects();
       const next = element.nextSibling;
@@ -309,10 +342,10 @@ test.describe("document revision highlights", () => {
       );
       await page.getByTestId("revision-dialog-close").click();
     }
-    await chooseRevision(page, 1);
+    await chooseRevision(page, 2);
     await expect(deleted).toHaveCount(1);
     await expect(words).toBeVisible();
-    await chooseRevision(page, 2);
+    await chooseRevision(page, 3);
     await expect(deleted).toHaveCount(1);
     await expect(paragraph).toBeVisible();
     await page.getByTestId("revision-toggle").click();
@@ -418,10 +451,10 @@ test.describe("document revision highlights", () => {
 
     await expect(
       page.getByTestId("revision-highlight").filter({ hasText: "wording" }),
-    ).toHaveAttribute("data-revision-number", "1");
+    ).toHaveAttribute("data-revision-number", "2");
     await expect(page.getByTestId("revision-deletion")).toHaveAttribute(
       "data-revision-number",
-      "2",
+      "3",
     );
     await page
       .getByTestId("revision-highlight")
@@ -484,5 +517,314 @@ test.describe("document revision highlights", () => {
     logE2eEvent("revision-highlights.deletion-review-overlap", {
       preserved: true,
     });
+  });
+
+  test("combines chosen versions, clears them all, and applies the latest preset", async ({
+    page,
+    request,
+  }) => {
+    const documentPath = writeProjectFile(directory, "review.md", "Start.\n");
+    await register(request, documentPath);
+    await changeOnDisk(request, directory, "Start. One.\n");
+    await changeOnDisk(request, directory, "Start. One. Two.\n");
+    await changeOnDisk(request, directory, "Start. One. Two. Three.\n");
+    await openMarkdownFile(page, documentPath);
+    await expect(page.getByTestId("revision-highlight")).toHaveCount(3);
+
+    await page.getByTestId("revision-filter").click();
+    await page.getByTestId("revision-filter-3").click();
+    await expect(page.getByTestId("revision-highlight")).toHaveCount(2);
+    await page.getByTestId("revision-filter-2").click();
+    await expect(page.getByTestId("revision-highlight")).toHaveCount(1);
+    await page.getByTestId("revision-filter-3").click();
+    await expect(page.getByTestId("revision-highlight")).toHaveCount(2);
+    await expect(page.getByTestId("revision-count")).toContainText("2 changes");
+
+    await page.getByTestId("revision-filter-latest").click();
+    await expect(page.getByTestId("revision-highlight")).toHaveCount(1);
+    await expect(page.getByTestId("revision-highlight")).toHaveAttribute(
+      "data-revision-number",
+      "4",
+    );
+    await page.getByTestId("revision-filter-4").click();
+    await expect(page.getByTestId("revision-highlight")).toHaveCount(0);
+    await expect(page.getByTestId("revision-count")).toContainText("0 changes");
+    await page.getByTestId("revision-filter-all").click();
+    await expect(page.getByTestId("revision-highlight")).toHaveCount(3);
+    await page.keyboard.press("Escape");
+    expect(readProjectFile(directory, "review.md")).toBe(
+      "Start. One. Two. Three.\n",
+    );
+    logE2eEvent("revision-highlights.multi-filter", {
+      selectedChangeCount: 2,
+      emptySelectionCount: 0,
+      restoredAllCount: 3,
+    });
+  });
+
+  test("previews the full saved version and restores only after confirmation", async ({
+    page,
+    request,
+  }) => {
+    const baseline = "# Earlier\n\nOriginal body.\n";
+    const first = "# Earlier\n\nFirst saved body.\n";
+    const latest = "# Current\n\nLatest saved body.\n";
+    const documentPath = writeProjectFile(directory, "review.md", baseline);
+    await register(request, documentPath);
+    await changeOnDisk(request, directory, first);
+    await changeOnDisk(request, directory, latest);
+    await openMarkdownFile(page, documentPath);
+
+    await page.getByTestId("revision-history").click();
+    await expect(page.getByTestId("revision-history-dialog")).toBeVisible();
+    await expect(page.getByTestId("revision-history-1")).toContainText("V1");
+    await expect(page.getByTestId("revision-history-author-1")).toContainText(
+      "Agent",
+    );
+    await expect(page.getByTestId("revision-history-author-3")).toContainText(
+      "Agent",
+    );
+    await expect(page.getByTestId("revision-history-time-3")).not.toBeEmpty();
+    await expect(page.getByTestId("revision-history-preview")).toContainText(
+      "Latest saved body.",
+    );
+    await expect(
+      page.getByTestId("revision-history-preview").locator(".ProseMirror"),
+    ).toHaveAttribute("contenteditable", "false");
+    await expect(page.getByTestId("revision-history-restore")).toBeDisabled();
+    await expect(
+      page.getByTestId("revision-restore-disabled-reason"),
+    ).toHaveText("This is already the current document.");
+    await page.getByTestId("revision-history-2").click();
+    await expect(page.getByTestId("revision-history-restore")).toBeEnabled();
+    await expect(page.getByTestId("revision-history-preview")).toContainText(
+      "First saved body.",
+    );
+    await page.getByTestId("revision-preview-source").click();
+    await expect(page.getByTestId("revision-history-source")).toHaveText(first);
+    await page.getByTestId("revision-preview-reading").click();
+    expect(readProjectFile(directory, "review.md")).toBe(latest);
+    await page.getByTestId("revision-history-restore").click();
+    await expect(page.getByTestId("revision-restore-confirm")).toBeVisible();
+    await page
+      .getByTestId("revision-restore-confirm")
+      .getByRole("button", { name: "Cancel" })
+      .click();
+    expect(readProjectFile(directory, "review.md")).toBe(latest);
+
+    let releaseSave = () => {};
+    const saveHold = new Promise<void>((resolve) => {
+      releaseSave = resolve;
+    });
+    let saveRequested = false;
+    await page.route("**/api/markdown-file?*", async (route) => {
+      if (route.request().method() !== "PUT") {
+        await route.continue();
+        return;
+      }
+      saveRequested = true;
+      await saveHold;
+      await route.continue();
+    });
+    try {
+      await page.getByTestId("revision-history-restore").click();
+      await page.getByTestId("revision-restore-confirm-button").click();
+      await expect.poll(() => saveRequested).toBe(true);
+      await expect(
+        page.getByTestId("revision-restore-confirm-button"),
+      ).toHaveText("Restoring…");
+      await expect(
+        page
+          .getByTestId("revision-restore-confirm")
+          .getByRole("button", { name: "Cancel" }),
+      ).toBeDisabled();
+      await page.keyboard.press("Escape");
+      await expect(page.getByTestId("revision-restore-confirm")).toBeVisible();
+      await expect(page.getByTestId("revision-history-dialog")).toBeVisible();
+      expect(readProjectFile(directory, "review.md")).toBe(latest);
+    } finally {
+      releaseSave();
+    }
+    await expect
+      .poll(() => readProjectFile(directory, "review.md"))
+      .toBe(first);
+    await expect
+      .poll(async () =>
+        (await revisions(request, documentPath)).map(({ number, content }) => ({
+          number,
+          content,
+        })),
+      )
+      .toEqual([
+        { number: 1, content: baseline },
+        { number: 2, content: first },
+        { number: 3, content: latest },
+      ]);
+    await expect(page.getByTestId("rich-text-editor")).toContainText(
+      "First saved body.",
+    );
+    logE2eEvent("revision-history.restore-confirmed", {
+      selected: 2,
+      completedVersionCount: 3,
+      previousVersionsPreserved: true,
+    });
+  });
+
+  test("requires a fresh confirmation when the document changes during restore", async ({
+    page,
+    request,
+  }) => {
+    const baseline = "# Restore guard\n\nOriginal.\n";
+    const first = "# Restore guard\n\nFirst edit.\n";
+    const newest = "# Restore guard\n\nNew external edit.\n";
+    const documentPath = writeProjectFile(directory, "review.md", baseline);
+    await register(request, documentPath);
+    await changeOnDisk(request, directory, first);
+    await openMarkdownFile(page, documentPath);
+
+    await page.getByTestId("revision-history").click();
+    await page.getByTestId("revision-history-1").click();
+    await page.getByTestId("revision-history-restore").click();
+    await expect(page.getByTestId("revision-restore-confirm")).toBeVisible();
+    await changeOnDisk(request, directory, newest);
+    await expect(page.getByTestId("revision-restore-confirm")).toHaveCount(0);
+    await expect(page.getByTestId("revision-history-notice")).toContainText(
+      "The document changed",
+    );
+    expect(readProjectFile(directory, "review.md")).toBe(newest);
+    expect(
+      (await revisions(request, documentPath)).map(({ content }) => content),
+    ).toEqual([baseline, first, newest]);
+    logE2eEvent("revision-history.stale-confirmation-blocked", {
+      unchangedAfterConfirmationInvalidated: true,
+    });
+  });
+
+  test("previews and restores a discarded browser copy without completing a version", async ({
+    page,
+    request,
+  }) => {
+    const baseline = "# Recovery\n\nPublished text.\n";
+    const discarded = "# Recovery\n\nDiscarded browser wording.\n";
+    const documentPath = writeProjectFile(directory, "review.md", baseline);
+    await register(request, documentPath);
+    const draft = {
+      storageKey: `recovery-test:${documentPath}`,
+      content: discarded,
+      baseContent: baseline,
+      baseVersion: null,
+      revision: "discarded-1",
+      tabId: "discarded-tab",
+      updatedAt: Date.now(),
+    };
+    const saved = await request.put("/api/reviews/drafts", {
+      data: { documentPath, draft },
+    });
+    expect(saved.ok()).toBe(true);
+    const removed = await request.delete("/api/reviews/drafts", {
+      data: {
+        documentPath,
+        tabId: draft.tabId,
+        revision: draft.revision,
+      },
+    });
+    expect(removed.ok()).toBe(true);
+    const history = await revisionHistory(request, documentPath);
+    const recovery = history.recoveryPoints.find(
+      (point) => point.content === discarded,
+    );
+    expect(recovery?.reason).toBe("browser-draft");
+    if (!recovery) throw new Error("Discarded browser copy was not retained");
+    expect(history.revisions.map(({ number }) => number)).toEqual([1]);
+
+    await openMarkdownFile(page, documentPath);
+    await page.getByTestId("revision-history").click();
+    await page.getByTestId("revision-history-recovery-tab").click();
+    await page.getByTestId(`revision-recovery-${recovery.id}`).click();
+    await expect(page.getByTestId("revision-history-preview")).toContainText(
+      "Discarded browser wording.",
+    );
+    await expect(page.getByTestId("revision-history-restore")).toBeEnabled();
+    await page.getByTestId("revision-history-restore").click();
+    await expect(page.getByTestId("revision-restore-confirm")).toContainText(
+      "A new completed version appears only after Done.",
+    );
+    await page.getByTestId("revision-restore-confirm-button").click();
+    await expect
+      .poll(() => readProjectFile(directory, "review.md"))
+      .toBe(discarded);
+    expect(
+      (await revisions(request, documentPath)).map(({ number }) => number),
+    ).toEqual([1]);
+  });
+
+  test("shows when an original edition was first seen, then refreshes its agent handoff", async ({
+    page,
+    request,
+  }) => {
+    const documentPath = writeProjectFile(
+      directory,
+      "review.md",
+      "# First edition\n\nNo handoff yet.\n",
+    );
+    await openMarkdownFile(page, documentPath);
+    const original = (await revisions(request, documentPath))[0];
+    expect(original).toMatchObject({
+      number: 1,
+      actor: "unknown",
+      completedAt: null,
+    });
+    await page.getByTestId("revision-history").click();
+    await expect(page.getByTestId("revision-history-time-1")).toContainText(
+      "First seen",
+    );
+    await page
+      .getByTestId("revision-history-dialog")
+      .getByText("Close", { exact: true })
+      .click();
+
+    await register(request, documentPath);
+    await expect
+      .poll(async () => (await revisions(request, documentPath))[0]?.actor)
+      .toBe("agent");
+    expect((await revisions(request, documentPath))[0]?.id).toBe(original.id);
+    await page.evaluate(() => window.dispatchEvent(new Event("focus")));
+    await page.getByTestId("revision-history").click();
+    await expect(page.getByTestId("revision-history-author-1")).toContainText(
+      "Agent",
+    );
+    await expect(page.getByTestId("revision-history-time-1")).toContainText(
+      "Completed",
+    );
+  });
+
+  test("provides thirty distinct computed colors in both themes", async ({
+    page,
+    request,
+  }) => {
+    const documentPath = writeProjectFile(directory, "review.md", "# Colors\n");
+    await register(request, documentPath);
+    await openMarkdownFile(page, documentPath);
+    for (const theme of ["light", "dark"] as const) {
+      await page.getByTestId("theme-menu-trigger").click();
+      await page.getByTestId(`theme-option-${theme}`).click();
+      const colors = await page.evaluate(() => {
+        const host = document.createElement("div");
+        host.style.display = "none";
+        for (let index = 0; index < 30; index++) {
+          const swatch = document.createElement("span");
+          swatch.className = `revision-swatch revision-color-${index}`;
+          host.append(swatch);
+        }
+        document.body.append(host);
+        const result = [...host.children].map((element) =>
+          getComputedStyle(element).getPropertyValue("--revision-fill").trim(),
+        );
+        host.remove();
+        return result;
+      });
+      expect(new Set(colors).size, `${theme} theme palette`).toBe(30);
+      logE2eEvent("revision-colors.palette", { theme, uniqueColors: 30 });
+    }
   });
 });

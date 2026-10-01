@@ -245,7 +245,7 @@ export function inspectDraftRecovery(
   draft: StoredDraft | null,
   current: DraftDocumentSnapshot,
 ): DraftRecovery {
-  if (!draft) return { kind: "none" };
+  if (!draft || draft.content === current.content) return { kind: "none" };
 
   const baseMatches =
     draft.baseContent === current.content &&

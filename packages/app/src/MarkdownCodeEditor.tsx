@@ -1,7 +1,7 @@
 import { markdown } from "@codemirror/lang-markdown";
 import { yamlFrontmatter } from "@codemirror/lang-yaml";
 import { HighlightStyle, syntaxHighlighting } from "@codemirror/language";
-import { EditorState, type Extension } from "@codemirror/state";
+import { Compartment, EditorState, type Extension } from "@codemirror/state";
 import { EditorView } from "@codemirror/view";
 import { tags } from "@lezer/highlight";
 import { basicSetup } from "codemirror";
@@ -55,14 +55,18 @@ export function createMarkdownCodeEditorExtensions(
   readOnly: boolean,
   onDocumentChange: (value: string) => void,
   lastValueRef: { current: string },
+  editability?: Compartment,
 ): Extension[] {
+  const editingExtensions = [
+    EditorState.readOnly.of(readOnly),
+    EditorView.editable.of(!readOnly),
+  ];
   return [
     basicSetup,
     yamlFrontmatter({ content: markdown() }),
     syntaxHighlighting(markdownHighlightStyle),
     EditorView.lineWrapping,
-    EditorState.readOnly.of(readOnly),
-    EditorView.editable.of(!readOnly),
+    editability?.of(editingExtensions) ?? editingExtensions,
     EditorView.updateListener.of((update) => {
       if (!update.docChanged) return;
 
@@ -133,7 +137,9 @@ export function MarkdownCodeEditor({
   const editorViewRef = useRef<EditorView | null>(null);
   const onChangeRef = useRef(onChange);
   const initialValueRef = useRef(value);
+  const initialReadOnlyRef = useRef(readOnly);
   const lastValueRef = useRef(value);
+  const editabilityRef = useRef(new Compartment());
 
   useEffect(() => {
     onChangeRef.current = onChange;
@@ -148,9 +154,10 @@ export function MarkdownCodeEditor({
       state: EditorState.create({
         doc: initialValueRef.current,
         extensions: createMarkdownCodeEditorExtensions(
-          readOnly,
+          initialReadOnlyRef.current,
           (nextValue) => onChangeRef.current(nextValue),
           lastValueRef,
+          editabilityRef.current,
         ),
       }),
     });
@@ -158,15 +165,26 @@ export function MarkdownCodeEditor({
     editorViewRef.current = view;
     lastValueRef.current = view.state.doc.toString();
 
-    if (autoFocus) {
-      view.focus();
-    }
-
     return () => {
       editorViewRef.current = null;
       view.destroy();
     };
-  }, [autoFocus, readOnly]);
+  }, []);
+
+  useEffect(() => {
+    // A temporary handoff lock must preserve the document, selection and undo
+    // history instead of recreating an editor from the initial file contents.
+    editorViewRef.current?.dispatch({
+      effects: editabilityRef.current.reconfigure([
+        EditorState.readOnly.of(readOnly),
+        EditorView.editable.of(!readOnly),
+      ]),
+    });
+  }, [readOnly]);
+
+  useEffect(() => {
+    if (autoFocus) editorViewRef.current?.focus();
+  }, [autoFocus]);
 
   useEffect(() => {
     const view = editorViewRef.current;
