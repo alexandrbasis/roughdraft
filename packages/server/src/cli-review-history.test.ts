@@ -4,7 +4,11 @@ import path from "node:path";
 import { fileURLToPath } from "node:url";
 import { PassThrough } from "node:stream";
 import { afterEach, beforeEach, describe, expect, it } from "vitest";
-import { createCliDependencies, runCli } from "./cli";
+import {
+  acknowledgeReceivedReviews,
+  createCliDependencies,
+  runCli,
+} from "./cli";
 import { callTool, startMcpServer } from "./mcp";
 import { ReviewRegistry } from "./review-registry";
 
@@ -12,7 +16,11 @@ describe("review history and delivery acknowledgements", () => {
   let dir: string;
   let documentPath: string;
   let env: NodeJS.ProcessEnv;
-  let requests: Array<{ pathname: string; body: Record<string, unknown> }>;
+  let requests: Array<{
+    origin: string;
+    pathname: string;
+    body: Record<string, unknown>;
+  }>;
   let capable: boolean;
   let ackFails: boolean;
   let logs: string[];
@@ -56,7 +64,7 @@ describe("review history and delivery acknowledgements", () => {
   const fetchImpl: typeof fetch = async (input, init) => {
     const url = new URL(input instanceof Request ? input.url : String(input));
     const body = JSON.parse(String(init?.body ?? "{}"));
-    requests.push({ pathname: url.pathname, body });
+    requests.push({ origin: url.origin, pathname: url.pathname, body });
     if (url.pathname === "/api/status")
       return json({
         serverRoot: root,
@@ -121,11 +129,87 @@ describe("review history and delivery acknowledgements", () => {
       .filter((r) => r.pathname === "/api/review-events/ack")
       .map((r) => r.body);
 
+  it.each([
+    7373, 8373,
+  ])("doctor probes each distinct port independently (preferred %i)", async (preferred) => {
+    env.ROUGHDRAFT_PORT = String(preferred);
+    const started: string[] = [];
+    let release!: () => void;
+    const gate = new Promise<void>((resolve) => {
+      release = resolve;
+    });
+    const pending = runCli(["doctor", "--json"], {
+      ...deps(),
+      fetchImpl: async (input) => {
+        started.push(new URL(String(input)).port);
+        await gate;
+        return json({ backend: "local-files", serverRoot: root });
+      },
+    });
+    await new Promise((resolve) => setImmediate(resolve));
+    const beforeRelease = [...started];
+    release();
+    expect(await pending).toBe(0);
+    const ports = [...new Set([String(preferred), "7373"])];
+    expect(beforeRelease.sort()).toEqual(ports.sort());
+    expect(started.sort()).toEqual(ports);
+    expect(JSON.parse(logs[0])).toMatchObject({
+      recordedPortResponds: true,
+      preferredPortResponds: true,
+    });
+  });
+
+  it("limits in-flight receipts and keeps reporting order when earlier receipts stall", async () => {
+    const events = [1, 2, 3, 4, 5, 6, 7, 3].map((sequence) => ({ sequence }));
+    const started: number[] = [];
+    let inFlight = 0;
+    let peakInFlight = 0;
+    const stalled = Promise.withResolvers<void>();
+    const result = acknowledgeReceivedReviews(
+      async (input, init) => {
+        if (new URL(String(input)).pathname === "/api/status")
+          return fetchImpl(input, init);
+        const { sequence } = JSON.parse(String(init?.body));
+        started.push(sequence);
+        inFlight++;
+        peakInFlight = Math.max(peakInFlight, inFlight);
+        await (sequence <= 2 ? stalled.promise : Promise.resolve());
+        inFlight--;
+        if (sequence === 1 || sequence === 4) throw new Error("offline");
+        return json({ sequence });
+      },
+      "http://localhost:7373",
+      { events },
+      "agent-a",
+    );
+    await new Promise((resolve) => setImmediate(resolve));
+    const startedWhileStalled = [...started];
+    stalled.resolve();
+    expect(await result).toMatchObject({
+      events,
+      acknowledgements: [2, 3, 5, 6, 7].map((sequence) => ({ sequence })),
+      warnings: [
+        expect.stringContaining("event 1"),
+        expect.stringContaining("event 4"),
+      ],
+    });
+    expect(peakInFlight).toBeLessThanOrEqual(4);
+    expect(new Set(startedWhileStalled)).toEqual(
+      new Set([1, 2, 3, 4, 5, 6, 7]),
+    );
+    expect(started).toHaveLength(7);
+  });
+
   it("CLI history returns the stored rounds and snapshots for a deleted file", async () => {
     fs.unlinkSync(documentPath);
     expect(await runCli(["history", documentPath, "--json"], deps())).toBe(0);
     expect(logs).toHaveLength(1);
     expect(JSON.parse(logs[0])).toEqual(history);
+    expect(requests.map((r) => r.pathname)).toEqual([
+      "/api/status",
+      "/api/reviews/history",
+    ]);
+    expect(requests[1].origin).toBe(requests[0].origin);
   });
 
   it.each([
@@ -153,6 +237,11 @@ describe("review history and delivery acknowledgements", () => {
       },
     ]);
     expect(JSON.parse(logs[0])).toMatchObject(acknowledgements()[0]);
+    expect(requests.map((r) => r.pathname)).toEqual([
+      "/api/status",
+      "/api/review-events/ack",
+    ]);
+    expect(requests[1].origin).toBe(requests[0].origin);
   });
 
   it.each([

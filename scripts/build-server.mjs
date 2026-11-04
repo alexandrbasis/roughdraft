@@ -25,11 +25,12 @@ const entryPoints = files
 // dependency. Registry dependencies stay external and are declared at the root.
 // Keep shared chunks beside entrypoints: runtime asset/state paths use import.meta.url.
 await fs.mkdir(outdir, { recursive: true });
-for (const file of await fs.readdir(outdir)) {
-  if (file.endsWith(".js") || file.endsWith(".js.map")) {
-    await fs.unlink(path.join(outdir, file));
-  }
-}
+const outputs = await fs.readdir(outdir);
+await Promise.all(
+  outputs
+    .filter((file) => file.endsWith(".js") || file.endsWith(".js.map"))
+    .map((file) => fs.unlink(path.join(outdir, file))),
+);
 await build({
   entryPoints,
   outdir,

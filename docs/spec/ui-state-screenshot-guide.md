@@ -129,7 +129,7 @@ Capture the persistent sidebar, active section after scrolling, long labels, a l
 ## Capture Matrix
 | Area | State | How to reach it | Useful selectors | Notes |
 | --- | --- | --- | --- | --- |
-| App shell | Initial loading | Load any route and capture before backend initialization completes, usually with a route/mock delay | none | Transient; easiest in a mocked route or component harness. |
+| App shell | Initial loading | Open a document or friendly review link and delay `/api/status` | none | Capture the blank shell before the server responds. |
 | Homepage | Desktop | `/` at desktop viewport | `homepage-workflow-storyboard` | Capture first viewport and a lower scroll position where the storyboard is active. |
 | Homepage | Mobile | `/` at mobile viewport | `homepage-workflow-storyboard`, `homepage-workflow-scene-list` | Sticky visual is hidden until the workflow heading has scrolled past. |
 | Homepage | Install dialog | Click the install CTA | Base UI dialog content | Include the terminal command and close affordance. |
@@ -140,6 +140,7 @@ Capture the persistent sidebar, active section after scrolling, long labels, a l
 | Homepage | Workflow stage 5 | Scroll to fifth scene | `homepage-workflow-handoff-button` | Done handoff button is visible. |
 | Homepage | Workflow stage 6 | Scroll to final scene | `homepage-workflow-agent-resume` | Agent resume line and incorporated plan are visible; done button is hidden. |
 | Homepage | Update notice | Start app with backend status returning `updateStatus` | update notice component | Best captured with API mocking unless an update is actually available. |
+| Review home | Loading reviews | Open `/` and delay `/api/reviews` | `review-home-status` | The homepage and its loading message appear while the inbox request is pending, even if `/api/status` is also pending. |
 | Review home | Registered reviews | Start the app at `/` with `/api/reviews` returning registered records | `review-home`, `review-home-list`, `review-home-item` | Capture pending and reviewed rows, including watcher count and keyboard focus. Include long project names and routes at 390px; cards must fit without horizontal page scrolling. |
 | Review home | Status filters and pages | Use a registry with more than 10 rows; select All, Waiting or Reviewed and change page | `review-filter-all`, `review-filter-pending`, `review-filter-completed`, `review-page-next`, `review-page-summary` | Capture counts, selected filter, page range and controls on desktop and at 375px. Reload preserves the URL selection. |
 | Review home | Empty status | Select a status with zero rows | `review-filter-empty`, `review-filter-reset` | Show an empty result and a way to return to all reviews. |

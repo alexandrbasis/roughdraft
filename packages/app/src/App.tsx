@@ -58,6 +58,7 @@ import { cn } from "./lib/utils";
 import type { DocumentSaveState } from "./PageCard";
 import { pollJson } from "./poll-json";
 import { PreviewBackend } from "./preview-backend";
+import { RemoteBackend } from "./remote-backend";
 import { RoughdraftFormatDemo } from "./RoughdraftFormatDemo";
 import { ReviewHome } from "./review-home/ReviewHome";
 import {
@@ -1542,9 +1543,12 @@ export function App() {
     [],
   );
 
-  const loadDocument = useCallback(
+  const loadInitialDocument = useCallback(
     async (nextBackend: StorageBackend, relativePath: string) => {
-      const nextDocument = await nextBackend.getMarkdownFile(relativePath);
+      const nextDocument =
+        nextBackend instanceof RemoteBackend
+          ? nextBackend.currentPage()
+          : await nextBackend.getMarkdownFile(relativePath);
       applyDocumentPage(nextDocument);
       setActiveDocumentPath(relativePath);
       documentDirtyRef.current = false;
@@ -1633,15 +1637,19 @@ export function App() {
       setDocumentPage(null);
 
       try {
-        const detectedBackend = await detectBackend();
+        const [detection, routeLookup] = await Promise.allSettled([
+          detectBackend(),
+          friendlyReviewRoute ? resolveReviewRoute(friendlyReviewRoute) : null,
+        ]);
         if (cancelled) return;
 
+        if (detection.status === "rejected") throw detection.reason;
+        const detectedBackend = detection.value;
         setBackend(detectedBackend);
 
         if (friendlyReviewRoute) {
-          const resolved = await resolveReviewRoute(friendlyReviewRoute);
-          if (cancelled) return;
-
+          if (routeLookup.status === "rejected") throw routeLookup.reason;
+          const resolved = routeLookup.value;
           if (!resolved) {
             setActiveDocumentPath(null);
             setLoadError("That review link is no longer registered.");
@@ -1655,7 +1663,7 @@ export function App() {
           }
           if (cancelled) return;
 
-          await loadDocument(detectedBackend, resolved.relativePath);
+          await loadInitialDocument(detectedBackend, resolved.relativePath);
           if (cancelled) return;
           setLoading(false);
           return;
@@ -1663,7 +1671,7 @@ export function App() {
 
         if (detectedBackend.info.kind === "remote") {
           const documentPath = detectedBackend.info.detail || "remote.md";
-          await loadDocument(detectedBackend, documentPath);
+          await loadInitialDocument(detectedBackend, documentPath);
           if (cancelled) return;
           setLoading(false);
           return;
@@ -1693,7 +1701,10 @@ export function App() {
 
         if (cancelled) return;
 
-        await loadDocument(detectedBackend, requestedPathState.documentPath);
+        await loadInitialDocument(
+          detectedBackend,
+          requestedPathState.documentPath,
+        );
         if (cancelled) return;
 
         setLoading(false);
@@ -1713,7 +1724,7 @@ export function App() {
       cancelled = true;
     };
   }, [
-    loadDocument,
+    loadInitialDocument,
     friendlyReviewRoute,
     requestedPathState.documentPath,
     requestedPathState.projectPath,
@@ -2025,7 +2036,11 @@ export function App() {
     [],
   );
 
-  if (loading) {
+  const openingDocument =
+    requestedPathState.rawPath ||
+    friendlyReviewRoute ||
+    new URLSearchParams(window.location.search).has("session");
+  if (loading && openingDocument) {
     return (
       <div
         className="h-screen bg-[#FCFCFC] dark:bg-background"
@@ -2042,7 +2057,12 @@ export function App() {
     return <PreviewPage />;
   }
 
-  if ((!requestedPathState.rawPath && !resolvedReviewRoute) || loadError) {
+  if (
+    (!requestedPathState.rawPath &&
+      !resolvedReviewRoute &&
+      backend?.info.kind !== "remote") ||
+    loadError
+  ) {
     return (
       <Homepage
         message={loadError ?? <HomepageSubtitle />}
