@@ -32,7 +32,7 @@ class CheckUpstreamError extends Error {
 
 async function runGit(args, options = {}) {
   try {
-    const result = await execFile(GIT_COMMAND, args, {
+    return await execFile(GIT_COMMAND, args, {
       cwd: options.cwd,
       encoding: "utf8",
       maxBuffer: 2 * 1024 * 1024,
@@ -40,21 +40,7 @@ async function runGit(args, options = {}) {
       timeout: 30_000,
       env: { ...process.env, GIT_TERMINAL_PROMPT: "0" },
     });
-    return {
-      exitCode: 0,
-      stdout: result.stdout,
-      stderr: result.stderr,
-    };
   } catch (error) {
-    const exitCode = typeof error.code === "number" ? error.code : null;
-    if (options.allowExitCodes?.includes(exitCode)) {
-      return {
-        exitCode,
-        stdout: error.stdout ?? "",
-        stderr: error.stderr ?? "",
-      };
-    }
-
     const detail = String(error.stderr ?? error.message ?? "git failed").trim();
     throw new CheckUpstreamError(
       detail ? `git ${args[0]} failed: ${detail}` : `git ${args[0]} failed`,
@@ -118,10 +104,15 @@ export async function checkUpstream(options = {}) {
   const remote = options.remote ?? DEFAULT_REMOTE;
   const branch = options.branch ?? DEFAULT_BRANCH;
   const remoteBranch = branchRef(branch);
-  const rootResult = await runGit(["rev-parse", "--show-toplevel"], { cwd });
-  const repoRoot = outputValue(rootResult.stdout);
-  const headResult = await runGit(["rev-parse", "HEAD"], { cwd: repoRoot });
-  const forkHead = outputValue(headResult.stdout);
+  const checkout = await runGit(
+    ["rev-parse", "--show-toplevel", "--verify", "HEAD"],
+    { cwd },
+  );
+  // Only the final line is the revision. The worktree path can contain newlines.
+  const checkoutInfo = checkout.stdout.trimEnd();
+  const headStart = checkoutInfo.lastIndexOf("\n") + 1;
+  const repoRoot = checkoutInfo.slice(0, headStart).replace(/\r?\n$/, "");
+  const forkHead = checkoutInfo.slice(headStart);
   const tempRef = `refs/roughdraft/check-upstream/${process.pid}-${Date.now()}-${randomUUID()}`;
   let primaryError;
   let cleanupError;
@@ -149,11 +140,7 @@ export async function checkUpstream(options = {}) {
       { cwd: repoRoot },
     );
     const { ahead, behind } = parseAheadBehind(aheadBehindResult.stdout);
-    const containsResult = await runGit(
-      ["merge-base", "--is-ancestor", upstreamSha, forkHead],
-      { cwd: repoRoot, allowExitCodes: [1] },
-    );
-    const containsUpstream = containsResult.exitCode === 0;
+    const containsUpstream = behind === 0;
 
     report = {
       remote,

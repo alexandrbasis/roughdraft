@@ -12,7 +12,6 @@ import {
   validateRoughdraftMarkdown,
 } from "@roughdraft/rfm";
 import {
-  ROUGHDRAFT_BIND_HOST,
   ROUGHDRAFT_DEFAULT_PORT,
   ROUGHDRAFT_LOOPBACK_HOSTS,
   ROUGHDRAFT_PUBLIC_HOST,
@@ -100,6 +99,8 @@ interface StatusPayload {
   port?: number;
 }
 
+type ProbedServerStatus = StatusPayload & { apiUrl: string };
+
 interface DevFrontendState {
   apiPort: number | null;
   appPort: number;
@@ -157,7 +158,7 @@ interface ResolvedTargetPath {
 }
 
 interface ReusableServer {
-  supportsReviewRegistry?: boolean;
+  status: ProbedServerStatus;
   port: number;
   url: string;
   tracked: boolean;
@@ -1789,15 +1790,13 @@ function removeServerStateFile(stateFilePath: string) {
 async function getStatusPayload(
   port: number,
   deps: CliDependencies,
-): Promise<StatusPayload | null> {
-  for (const host of [ROUGHDRAFT_BIND_HOST, ...ROUGHDRAFT_LOOPBACK_HOSTS]) {
+): Promise<ProbedServerStatus | null> {
+  for (const host of ROUGHDRAFT_LOOPBACK_HOSTS) {
     try {
-      const response = await deps.fetchImpl(
-        buildLoopbackUrl(host, port, STATUS_PATH),
-        {
-          signal: AbortSignal.timeout(STATUS_TIMEOUT_MS),
-        },
-      );
+      const url = buildLoopbackUrl(host, port, STATUS_PATH);
+      const response = await deps.fetchImpl(url, {
+        signal: AbortSignal.timeout(STATUS_TIMEOUT_MS),
+      });
 
       if (!response.ok) {
         continue;
@@ -1805,7 +1804,7 @@ async function getStatusPayload(
 
       const payload = (await response.json()) as StatusPayload;
       if (payload.backend === "local-files") {
-        return payload;
+        return { ...payload, apiUrl: url.origin };
       }
     } catch {}
   }
@@ -1917,10 +1916,10 @@ async function resolveLiveDevFrontendBaseUrl(
   }
 }
 
-async function normalizeTrackedState(
+function normalizeTrackedState(
   persistedState: RoughdraftServerState,
   stateFilePath: string,
-): Promise<RoughdraftServerState> {
+): RoughdraftServerState {
   const normalizedState = {
     ...persistedState,
     url: buildPublicBaseUrl(persistedState.port),
@@ -1957,7 +1956,7 @@ async function findReusableServer(
     const statusPayload = await getStatusPayload(persistedState.port, deps);
 
     if (pidRunning && statusPayload && matchesServerRoot(statusPayload)) {
-      const normalizedState = await normalizeTrackedState(
+      const normalizedState = normalizeTrackedState(
         persistedState,
         stateFilePath,
       );
@@ -1967,8 +1966,7 @@ async function findReusableServer(
         tracked: true,
         pid: normalizedState.pid,
         startedAt: normalizedState.startedAt,
-        supportsReviewRegistry:
-          statusPayload.capabilities?.reviewRegistry === true,
+        status: statusPayload,
       };
     }
 
@@ -1985,12 +1983,12 @@ async function findReusableServer(
         port: persistedState.port,
         url: buildPublicBaseUrl(persistedState.port),
         tracked: false,
-        supportsReviewRegistry:
-          statusPayload.capabilities?.reviewRegistry === true,
+        status: statusPayload,
         pid: null,
         startedAt: null,
       };
     }
+    if (persistedState.port === preferredPort) return null;
   }
 
   const preferredStatus = await getStatusPayload(preferredPort, deps);
@@ -2002,8 +2000,7 @@ async function findReusableServer(
     port: preferredPort,
     url: buildPublicBaseUrl(preferredPort),
     tracked: false,
-    supportsReviewRegistry:
-      preferredStatus.capabilities?.reviewRegistry === true,
+    status: preferredStatus,
     pid: null,
     startedAt: null,
   };
@@ -2056,7 +2053,7 @@ export async function ensureServerRunning(
       projectDir,
     });
 
-    let statusPayload: StatusPayload;
+    let statusPayload: ProbedServerStatus;
     try {
       statusPayload = await waitForServer(port, deps);
     } catch (error) {
@@ -2079,8 +2076,7 @@ export async function ensureServerRunning(
         tracked: true,
         pid: state.pid,
         startedAt: state.startedAt,
-        supportsReviewRegistry:
-          statusPayload.capabilities?.reviewRegistry === true,
+        status: statusPayload,
       },
       reused: false,
       portChanged: port !== preferredPort,
@@ -2166,10 +2162,16 @@ async function runDoctor(
   const stateFilePath = getServerStateFilePath(deps.env);
   const persistedState = readServerStateFromDisk(stateFilePath);
   const preferredPort = getPreferredPort(deps.env);
-  const preferredStatus = await getStatusPayload(preferredPort, deps);
-  const trackedStatus = persistedState
-    ? await getStatusPayload(persistedState.port, deps)
-    : null;
+  const preferredProbe = getStatusPayload(preferredPort, deps);
+  const trackedProbe = !persistedState
+    ? null
+    : persistedState.port === preferredPort
+      ? preferredProbe
+      : getStatusPayload(persistedState.port, deps);
+  const [preferredStatus, trackedStatus] = await Promise.all([
+    preferredProbe,
+    trackedProbe,
+  ]);
   const cwdReadable = (() => {
     try {
       fs.accessSync(deps.cwd, fs.constants.R_OK);
@@ -2407,15 +2409,24 @@ async function requestReviewApi(
   return response.json();
 }
 
+type ReviewApiTarget = string | ProbedServerStatus;
+
+function reviewApiUrl(target: ReviewApiTarget): string {
+  return typeof target === "string" ? target : target.apiUrl;
+}
+
 async function supportsReviewApi(
   fetchImpl: typeof fetch,
-  serverUrl: string,
+  target: ReviewApiTarget,
   capability: "reviewHistory" | "reviewAcknowledgements",
 ): Promise<boolean> {
-  const status = (await requestReviewApi(
-    fetchImpl,
-    new URL(STATUS_PATH, serverUrl),
-  )) as StatusPayload;
+  const status =
+    typeof target === "string"
+      ? ((await requestReviewApi(
+          fetchImpl,
+          new URL(STATUS_PATH, target),
+        )) as StatusPayload)
+      : target;
   return status?.capabilities?.[capability] === true;
 }
 
@@ -2492,22 +2503,22 @@ async function getReviewDocument(
 
 export async function getReviewHistory(
   fetchImpl: typeof fetch,
-  serverUrl: string,
+  target: ReviewApiTarget,
   documentPath: string,
 ): Promise<ReviewHistoryPayload> {
-  if (!(await supportsReviewApi(fetchImpl, serverUrl, "reviewHistory"))) {
+  if (!(await supportsReviewApi(fetchImpl, target, "reviewHistory"))) {
     throw new Error(
       "This Roughdraft server does not support review history. Update the server.",
     );
   }
-  const url = new URL("/api/reviews/history", serverUrl);
+  const url = new URL("/api/reviews/history", reviewApiUrl(target));
   url.searchParams.set("documentPath", documentPath);
   return (await requestReviewApi(fetchImpl, url)) as ReviewHistoryPayload;
 }
 
 export async function acknowledgeReviewEvent(
   fetchImpl: typeof fetch,
-  serverUrl: string,
+  target: ReviewApiTarget,
   sequence: number,
   consumerId: string,
   status: "received" | "processed" = "processed",
@@ -2516,16 +2527,14 @@ export async function acknowledgeReviewEvent(
   validateConsumerId(consumerId);
   if (status !== "received" && status !== "processed")
     throw new Error("status must be received or processed.");
-  if (
-    !(await supportsReviewApi(fetchImpl, serverUrl, "reviewAcknowledgements"))
-  ) {
+  if (!(await supportsReviewApi(fetchImpl, target, "reviewAcknowledgements"))) {
     throw new Error(
       "This Roughdraft server does not support review acknowledgements. Update the server.",
     );
   }
   return (await requestReviewApi(
     fetchImpl,
-    new URL("/api/review-events/ack", serverUrl),
+    new URL("/api/review-events/ack", reviewApiUrl(target)),
     { sequence, consumerId, status },
   )) as ReviewAcknowledgement;
 }
@@ -2548,6 +2557,8 @@ function reviewEventSequences(payload: ReviewWatchPayload): number[] {
   ];
 }
 
+const MAX_CONCURRENT_RECEIPTS = 4;
+
 export async function acknowledgeReceivedReviews(
   fetchImpl: typeof fetch,
   serverUrl: string,
@@ -2564,20 +2575,34 @@ export async function acknowledgeReceivedReviews(
       !(await supportsReviewApi(fetchImpl, serverUrl, "reviewAcknowledgements"))
     )
       return delivered;
-    for (const sequence of sequences) {
-      try {
-        acknowledgements.push(
-          (await requestReviewApi(
-            fetchImpl,
-            new URL("/api/review-events/ack", serverUrl),
-            { sequence, consumerId, status: "received" },
-          )) as ReviewAcknowledgement,
-        );
-      } catch (error) {
-        warnings.push(
-          `Review event ${sequence} was delivered, but receipt for consumer ${consumerId} could not be acknowledged: ${error instanceof Error ? error.message : String(error)}`,
-        );
+    const url = new URL("/api/review-events/ack", serverUrl);
+    const results: Array<ReviewAcknowledgement | string> = [];
+    let nextIndex = 0;
+    async function sendReceipts() {
+      while (nextIndex < sequences.length) {
+        const index = nextIndex++;
+        const sequence = sequences[index];
+        try {
+          results[index] = (await requestReviewApi(fetchImpl, url, {
+            sequence,
+            consumerId,
+            status: "received",
+          })) as ReviewAcknowledgement;
+        } catch (error) {
+          results[index] =
+            `Review event ${sequence} was delivered, but receipt for consumer ${consumerId} could not be acknowledged: ${error instanceof Error ? error.message : String(error)}`;
+        }
       }
+    }
+    await Promise.all(
+      Array.from(
+        { length: Math.min(sequences.length, MAX_CONCURRENT_RECEIPTS) },
+        sendReceipts,
+      ),
+    );
+    for (const result of results) {
+      if (typeof result === "string") warnings.push(result);
+      else acknowledgements.push(result);
     }
   } catch (error) {
     warnings.push(
@@ -2596,11 +2621,14 @@ async function runWatch(
   targetPath: string,
   options: ParsedWatchOptions,
   json: boolean,
-  afterSequence?: number,
+  {
+    afterSequence,
+    managedServerUrl,
+  }: { afterSequence?: number; managedServerUrl?: string } = {},
 ): Promise<number> {
   const consumerId = reviewConsumerId(options.consumerId, deps.env);
   const target = resolveTargetPath(targetPath);
-  let serverUrl = options.serverUrl;
+  let serverUrl = options.serverUrl ?? managedServerUrl;
   if (!serverUrl) {
     const result = await ensureServerRunning(deps, {
       projectDir: target.projectDir,
@@ -3317,7 +3345,7 @@ export async function runCli(
           );
           const history = await getReviewHistory(
             deps.fetchImpl,
-            server.url,
+            server.status,
             documentPath,
           );
           if (json) emitJson(deps.log, history);
@@ -3342,7 +3370,7 @@ export async function runCli(
         } else {
           const ack = await acknowledgeReviewEvent(
             deps.fetchImpl,
-            server.url,
+            server.status,
             sequence as number,
             options.consumerId as string,
             options.received ? "received" : "processed",
@@ -3514,11 +3542,12 @@ export async function runCli(
         baseUrl = buildPublicBaseUrl(result.server.port);
       }
 
-      const registrationApi = result?.server.supportsReviewRegistry
-        ? result.server.url
-        : liveDevFrontend?.supportsReviewRegistry
-          ? liveDevFrontend.apiUrl
-          : null;
+      const registrationApi =
+        result?.server.status.capabilities?.reviewRegistry === true
+          ? result.server.url
+          : liveDevFrontend?.supportsReviewRegistry
+            ? liveDevFrontend.apiUrl
+            : null;
       const reviewLink =
         registrationApi && isMarkdownPath(openPath)
           ? await registerReviewLink({
@@ -3588,13 +3617,10 @@ export async function runCli(
           timeoutSeconds: options.timeoutSeconds,
         };
         shouldPrintUpdateNotice = false;
-        return runWatch(
-          deps,
-          target,
-          watchOptions,
-          json,
-          reviewLink.afterSequence,
-        );
+        return runWatch(deps, target, watchOptions, json, {
+          afterSequence: reviewLink.afterSequence,
+          managedServerUrl: result?.server.url,
+        });
       }
 
       if (json) {

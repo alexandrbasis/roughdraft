@@ -1387,6 +1387,7 @@ describe("cli", () => {
       timeoutSeconds?: number;
       batchWindowSeconds?: number;
     } | null = null;
+    const requestPaths: string[] = [];
     const deps = {
       ...test.deps,
       fetchImpl: async (input: Parameters<typeof fetch>[0], init) => {
@@ -1397,6 +1398,7 @@ describe("cli", () => {
                 typeof input === "string" ? input : input.url,
                 "http://localhost",
               );
+        requestPaths.push(url.pathname);
         if (
           url.pathname === "/api/review-events/watch" &&
           typeof init?.body === "string"
@@ -1449,6 +1451,12 @@ describe("cli", () => {
     }>(test.logs);
 
     expect(exitCode).toBe(0);
+    expect(
+      requestPaths.slice(
+        requestPaths.indexOf("/api/reviews") + 1,
+        requestPaths.indexOf("/api/review-events/watch"),
+      ),
+    ).not.toContain("/api/status");
     expect(test.getLastOpenedUrl()).toContain(encodeURIComponent(documentPath));
     expect(payload).toMatchObject({
       timedOut: false,
@@ -1461,7 +1469,7 @@ describe("cli", () => {
     });
   });
 
-  it("cleans stale state during status checks", async () => {
+  it("cleans stale state after probing each loopback address once on the recorded preferred port", async () => {
     const test = createTestDependencies();
     const stateFilePath = getServerStateFilePath(test.deps.env);
 
@@ -1469,17 +1477,29 @@ describe("cli", () => {
     fs.writeFileSync(
       stateFilePath,
       JSON.stringify({
-        port: 3999,
+        port: ROUGHDRAFT_DEFAULT_PORT,
         pid: 999999,
         startedAt: new Date().toISOString(),
-        url: "http://localhost:3999",
+        url: `http://localhost:${ROUGHDRAFT_DEFAULT_PORT}`,
       }),
     );
 
-    const exitCode = await runCli(["status"], test.deps);
+    const probes: string[] = [];
+    const exitCode = await runCli(["status"], {
+      ...test.deps,
+      env: {
+        ...test.deps.env,
+        ROUGHDRAFT_PORT: String(ROUGHDRAFT_DEFAULT_PORT),
+      },
+      fetchImpl: async (input) => {
+        probes.push(new URL(String(input)).hostname);
+        throw new Error("connect ECONNREFUSED");
+      },
+    });
 
     expect(exitCode).toBe(1);
     expect(fs.existsSync(stateFilePath)).toBeFalsy();
+    expect(probes).toEqual(["127.0.0.1", "[::1]"]);
   });
 
   it("preserves a live tracked server when status cannot reach its nondefault port", async () => {

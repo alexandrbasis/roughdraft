@@ -1,4 +1,5 @@
-import { expect, test } from "@playwright/test";
+import { expect, type Page, test } from "@playwright/test";
+import { logE2eEvent } from "./helpers";
 
 const routeRecord = {
   id: "review_atlas_launch",
@@ -14,9 +15,10 @@ const routeRecord = {
   reviewed: false,
 };
 
-async function mockLocalReviewApi(page: import("@playwright/test").Page) {
-  await page.route("**/api/status", (route) =>
-    route.fulfill({
+async function mockLocalReviewApi(page: Page, statusGate: Promise<void>) {
+  await page.route("**/api/status", async (route) => {
+    await statusGate;
+    await route.fulfill({
       contentType: "application/json",
       body: JSON.stringify({
         backend: "local-files",
@@ -24,8 +26,8 @@ async function mockLocalReviewApi(page: import("@playwright/test").Page) {
         stateless: true,
         capabilities: { remoteDocuments: true },
       }),
-    }),
-  );
+    });
+  });
   await page.route("**/api/update-status", (route) =>
     route.fulfill({ contentType: "application/json", body: "null" }),
   );
@@ -58,9 +60,17 @@ test.describe("durable review routes", () => {
   test("reloads a friendly route without replacing it with a path query", async ({
     page,
   }) => {
-    await mockLocalReviewApi(page);
-
-    await page.goto(routeRecord.route);
+    const statusGate = Promise.withResolvers<void>();
+    await mockLocalReviewApi(page, statusGate.promise);
+    try {
+      await Promise.all([
+        page.waitForRequest("**/api/reviews/resolve?**"),
+        page.goto(routeRecord.route),
+      ]);
+      logE2eEvent("review-route.requested-while-status-pending");
+    } finally {
+      statusGate.resolve();
+    }
     await expect(page.getByTestId("rich-text-editor")).toContainText(
       "A readable review route.",
     );
@@ -78,10 +88,16 @@ test.describe("durable review routes", () => {
   test("shows pending reviews on the home list and follows the keyboard link", async ({
     page,
   }) => {
-    await mockLocalReviewApi(page);
-
-    await page.goto("/");
+    const statusGate = Promise.withResolvers<void>();
+    await mockLocalReviewApi(page, statusGate.promise);
     const reviewLink = page.getByTestId("review-home-item");
+    try {
+      await page.goto("/");
+      await expect(reviewLink).toContainText("Launch plan");
+      logE2eEvent("review-home.loaded-while-status-pending");
+    } finally {
+      statusGate.resolve();
+    }
     await expect(reviewLink).toContainText("Atlas");
     await expect(reviewLink).toContainText("Launch plan");
     await expect(reviewLink).toContainText("Waiting");

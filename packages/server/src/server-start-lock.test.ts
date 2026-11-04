@@ -22,7 +22,7 @@ describe("server start lock", () => {
     return getServerStartLockPath(path.join(tempDir, "state", "server.json"));
   }
 
-  it("cleans a stale owner and acquires the lock", async () => {
+  it("acquires a reclaimed lock without waiting for another owner", async () => {
     const lockPath = createLockPath();
     fs.mkdirSync(lockPath, { recursive: true });
     fs.writeFileSync(
@@ -34,12 +34,13 @@ describe("server start lock", () => {
       }),
     );
 
+    const sleepImpl = vi.fn(async () => {});
     const lock = await acquireServerStartLock(lockPath, {
       isProcessRunning: () => false,
-      retryDelayMs: 1,
-      timeoutMs: 100,
+      sleepImpl,
     });
 
+    expect(sleepImpl).not.toHaveBeenCalled();
     expect(
       JSON.parse(fs.readFileSync(path.join(lockPath, "owner.json"), "utf8")),
     ).toMatchObject({

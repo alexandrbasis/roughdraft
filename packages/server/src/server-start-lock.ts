@@ -254,15 +254,13 @@ export async function acquireServerStartLock(
     }
 
     const existingOwner = readOwner(absoluteLockPath);
-    if (existingOwner) {
-      removeLockForStaleOwner(
-        absoluteLockPath,
-        existingOwner,
-        isProcessRunning,
-      );
-    } else {
-      removeLockWithMissingOwner(absoluteLockPath, staleLockAgeMs, now);
-    }
+    const reclaimed = existingOwner
+      ? removeLockForStaleOwner(
+          absoluteLockPath,
+          existingOwner,
+          isProcessRunning,
+        )
+      : removeLockWithMissingOwner(absoluteLockPath, staleLockAgeMs, now);
 
     if (now() >= deadline) {
       throw new Error(
@@ -270,6 +268,8 @@ export async function acquireServerStartLock(
       );
     }
 
-    await sleepImpl(Math.min(retryDelayMs, Math.max(1, deadline - now())));
+    if (!reclaimed) {
+      await sleepImpl(Math.min(retryDelayMs, Math.max(1, deadline - now())));
+    }
   }
 }

@@ -31,7 +31,7 @@
     "test:package": "node scripts/test-package-install.mjs",
     "test:coverage": "pnpm --filter @roughdraft/rfm build && pnpm --filter @roughdraft/app exec vitest run --coverage && pnpm --filter @roughdraft/server exec vitest run --coverage",
     "check": "pnpm lint && pnpm test:selectors && pnpm test && pnpm test:tooling && pnpm build",
-    "build": "pnpm --filter @roughdraft/rfm build && pnpm --filter @roughdraft/app build && pnpm --filter @roughdraft/server build",
+    "build": "pnpm --parallel --filter @roughdraft/app --filter @roughdraft/server build",
     "preview": "node packages/server/bin/roughdraft.mjs open README.md",
     "release:prepare": "node scripts/prepare-release.mjs",
     "test:tooling": "node --test scripts/*.test.mjs",

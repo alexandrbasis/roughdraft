@@ -86,7 +86,7 @@ export class RemoteBackend implements StorageBackend {
     }
   }
 
-  private pageFromBootstrap(): Page {
+  currentPage(): Page {
     return {
       id: this.bootstrap.id,
       title: titleFromContent(this.bootstrap.content, this.documentPath()),
@@ -111,7 +111,7 @@ export class RemoteBackend implements StorageBackend {
     }
     const payload = (await response.json()) as RemoteDocumentPayload;
     this.bootstrap = payload;
-    return this.pageFromBootstrap();
+    return this.currentPage();
   }
 
   async saveMarkdownFile(
@@ -141,7 +141,7 @@ export class RemoteBackend implements StorageBackend {
       };
       if (payload.current) {
         this.bootstrap = payload.current;
-        throw new MarkdownFileConflictError(this.pageFromBootstrap());
+        throw new MarkdownFileConflictError(this.currentPage());
       }
     }
 
@@ -157,7 +157,7 @@ export class RemoteBackend implements StorageBackend {
       content,
       version: updated.version,
     };
-    return this.pageFromBootstrap();
+    return this.currentPage();
   }
 
   watchMarkdownFile(
