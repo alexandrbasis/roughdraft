@@ -405,7 +405,15 @@ try {
       throw new Error(`npm pack failed with exit code ${pack.exitCode}`);
     }
 
-    const packed = JSON.parse(pack.stdout)[0];
+    const packReport = JSON.parse(pack.stdout);
+    const packed = Array.isArray(packReport)
+      ? packReport[0]
+      : packReport?.[manifest.name];
+    if (typeof packed?.filename !== "string" || !packed.filename) {
+      throw new Error(
+        `npm pack did not report a filename for ${manifest.name}`,
+      );
+    }
     tarballPath = path.join(packDirectory, packed.filename);
   } else {
     await access(tarballPath);
